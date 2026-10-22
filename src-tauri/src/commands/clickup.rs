@@ -7,7 +7,7 @@
 //! settings lock is held: each command copies what it needs, unlocks, does
 //! the slow part, then locks again to save.
 
-use crate::clickup::secret::{env_token, resolve};
+use crate::clickup::secret::{env_token, env_token_rejected, resolve};
 use crate::clickup::{
     ClickUp, ClickUpToken, Clock, Gate, KeychainStore, SecretStore, SystemClock, Transport,
     UreqTransport,
@@ -31,6 +31,10 @@ pub struct ClickUpAccountStatus {
     pub workspace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_name: Option<String>,
+    /// `DCT_CLICKUP_TOKEN` was set at startup but was not a token, so it is
+    /// not used (first account only). Sent only when true.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub env_rejected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -50,11 +54,11 @@ pub struct ClickUpTestResult {
 }
 
 /// What a command reads from settings for one account, copied out of the lock.
-struct AccountCopy {
-    id: String,
-    name: String,
+pub(crate) struct AccountCopy {
+    pub id: String,
+    pub name: String,
     first: bool,
-    workspace: Option<ClickUpWorkspace>,
+    pub workspace: Option<ClickUpWorkspace>,
 }
 
 fn accounts_of(settings: &Mutex<SettingsStore>) -> Result<Vec<AccountCopy>, String> {
@@ -74,7 +78,7 @@ fn accounts_of(settings: &Mutex<SettingsStore>) -> Result<Vec<AccountCopy>, Stri
         .collect())
 }
 
-fn account_of(settings: &Mutex<SettingsStore>, account_id: &str) -> Result<AccountCopy, String> {
+pub(crate) fn account_of(settings: &Mutex<SettingsStore>, account_id: &str) -> Result<AccountCopy, String> {
     accounts_of(settings)?
         .into_iter()
         .find(|account| account.id == account_id)
@@ -87,13 +91,17 @@ pub(crate) struct Deps<'a> {
     pub secrets: &'a dyn SecretStore,
     /// `DCT_CLICKUP_TOKEN`, taken at startup.
     pub env: Option<ClickUpToken>,
+    /// `DCT_CLICKUP_TOKEN` was set at startup but was not a token.
+    pub env_rejected: bool,
     pub transport: &'a dyn Transport,
     pub gate: &'a Gate,
     pub clock: &'a dyn Clock,
 }
 
 impl Deps<'_> {
-    fn token(&self, account: &AccountCopy) -> Result<(Option<ClickUpToken>, &'static str), String> {
+    /// `account`'s token (keychain, or the env override for the first
+    /// account) and where it comes from.
+    pub(crate) fn token(&self, account: &AccountCopy) -> Result<(Option<ClickUpToken>, &'static str), String> {
         let (token, source) = resolve(&account.id, account.first, self.env.clone(), self.secrets)?;
         Ok((token, source.as_str()))
     }
@@ -103,6 +111,7 @@ impl Deps<'_> {
         Ok(ClickUpAccountStatus {
             configured: token.is_some(),
             source,
+            env_rejected: account.first && self.env_rejected,
             workspace_id: account.workspace.as_ref().map(|w| w.team_id.clone()),
             workspace_name: account.workspace.map(|w| w.team_name),
             account_id: account.id,
@@ -193,7 +202,7 @@ pub(crate) fn test_token(
 }
 
 /// Runs `work` on the blocking pool with the app's real keychain and HTTPS.
-async fn with_deps<T: Send + 'static>(
+pub(crate) async fn with_deps<T: Send + 'static>(
     app: AppHandle,
     work: impl FnOnce(&Deps) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -204,6 +213,7 @@ async fn with_deps<T: Send + 'static>(
             settings: settings.inner(),
             secrets: &KeychainStore,
             env: env_token(),
+            env_rejected: env_token_rejected(),
             transport: &transport,
             gate: Gate::shared(),
             clock: &SystemClock,
@@ -304,6 +314,7 @@ mod tests {
             settings,
             secrets,
             env: None,
+            env_rejected: false,
             transport,
             gate,
             clock,
@@ -457,6 +468,34 @@ mod tests {
         let after = clear_token(&deps, "default").unwrap();
         assert_eq!(after.source, "env");
         assert_eq!(after.workspace_name.as_deref(), Some("Koneksi QA"));
+    }
+
+    #[test]
+    fn an_env_value_that_is_not_a_token_is_reported_for_the_first_account() {
+        let dir = crate::test_support::temp_path("clickup_env_rejected");
+        let settings = settings_in(&dir);
+        let secrets = MemoryStore::default();
+        let api = Recorded::default();
+        let (gate, clock) = (Gate::new(), FakeClock::at(1_790_000_000));
+        let mut deps = deps(&settings, &secrets, &api, &gate, &clock);
+        deps.env_rejected = true;
+
+        let all = statuses(&deps).unwrap();
+        assert_eq!(
+            (all[0].configured, all[0].source, all[0].env_rejected),
+            (false, "none", true)
+        );
+        assert!(!all[1].env_rejected);
+        assert!(serde_json::to_string(&all[0])
+            .unwrap()
+            .contains("\"envRejected\":true"));
+        assert!(!serde_json::to_string(&all[1])
+            .unwrap()
+            .contains("envRejected"));
+        // A keychain token still works alongside the rejected env value.
+        set_token(&deps, "default", TOKEN).unwrap();
+        let first = statuses(&deps).unwrap().remove(0);
+        assert_eq!((first.source, first.env_rejected), ("keychain", true));
     }
 
     #[test]

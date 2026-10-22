@@ -742,6 +742,7 @@ impl<H: Host> Actor<H> {
                     ("Plan", crate::bridge::folder::PLAN_FILE.to_string()),
                     ("Tasks", TASKS_FILE.to_string()),
                     ("Pull requests", crate::bridge::folder::prs_file_name(placed.lane.as_deref())),
+                    (prompts::TICKETS_LABEL, crate::bridge::folder::TICKETS_FILE.to_string()),
                 ]
                 .into_iter()
                 .map(|(what, name)| (what.to_string(), dir.join(name)))

@@ -47,6 +47,7 @@ import {
   type SessionLogs,
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
+import { TicketsSinceIntake } from "./TicketsSinceIntake";
 import { haikuDefaultModeNote } from "../pipeline/haikuMode";
 import { parseReviewVerdict, verdictTone } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
@@ -546,6 +547,8 @@ export function PipelineOverview({
           <p className="hint">Not filled in yet. It comes from the first stage's form.</p>
         )}
       </section>
+
+      {(run.engine ?? 1) >= 2 && <TicketsSinceIntake runId={run.id} />}
 
       <div className="pipeline-lanes">
         {stages.map((stage) => {

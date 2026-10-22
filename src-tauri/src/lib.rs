@@ -105,6 +105,10 @@ use commands::{
 };
 use commands::{clickup_status, clickup_test, clickup_token_clear, clickup_token_set};
 use commands::{
+    clickup_intake_check, clickup_intake_preview, clickup_intake_pull, clickup_intake_snapshot,
+    clickup_intake_status,
+};
+use commands::{
     github_claim_notifications, github_feed, github_push_commits, github_save_filters,
     github_status,
 };
@@ -158,20 +162,37 @@ fn isolate_webview_data_dir() {
     }
 }
 
+/// The steps that change process env at the start of [`run`], in the order
+/// they run. Each is only sound while the main thread is the only thread.
+///
+/// - `DCT_CLICKUP_TOKEN` is moved out of the env first, before any step can
+///   start a child: on a first run, or with a stale PATH cache,
+///   `apply_login_path` runs `$SHELL -l -i -c …`, and that shell (and
+///   anything its rc files start) would inherit the token.
+/// - The scrub drops a parent Claude Code session's variables, so Claude tabs
+///   (and a `claude` typed in a shell tab) don't take themselves for nested
+///   sessions and skip their session log. It also runs before the login
+///   shell, so that shell never sees a parent session's tokens either. The
+///   per-command `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_EXECUTABLE` are applied
+///   later and are untouched.
+/// - The login PATH replaces the inherited one. A cached login PATH is
+///   refreshed from `setup`, never from a thread started here.
+const STARTUP_ENV_STEPS: [(&str, fn()); 4] = [
+    ("take_clickup_token", clickup::secret::take_env_token),
+    (
+        "scrub_parent_claude_session",
+        shell_env::scrub_parent_claude_session,
+    ),
+    ("apply_login_path", shell_env::apply_login_path),
+    ("isolate_webview_data_dir", isolate_webview_data_dir),
+];
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Before anything else: all four change process env, which is only
-    // sound while the main thread is the only thread. The scrub drops a
-    // parent Claude Code session's variables, so Claude tabs (and a `claude`
-    // typed in a shell tab) don't take themselves for nested sessions and
-    // skip their session log. The per-command `CLAUDE_CONFIG_DIR` and
-    // `CLAUDE_CODE_EXECUTABLE` are applied later and are untouched. A cached
-    // login PATH is refreshed from `setup`, never from a thread started here.
-    // `DCT_CLICKUP_TOKEN` is moved out of the env so no child inherits it.
-    shell_env::apply_login_path();
-    shell_env::scrub_parent_claude_session();
-    clickup::secret::take_env_token();
-    isolate_webview_data_dir();
+    // Before anything else, on the main thread with no other thread yet.
+    for (_, step) in STARTUP_ENV_STEPS {
+        step();
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -221,6 +242,8 @@ pub fn run() {
             app.manage(Mutex::new(github_store));
             app.manage(Mutex::new(github_cache));
             app.manage(github::GithubSync::new());
+            // C2: ClickUp intake snapshots waiting for their start, and change checks.
+            app.manage(commands::IntakeState::default());
             app.manage(Mutex::new(crate::usage::UsageStore::open(&data_dir)));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
@@ -295,6 +318,11 @@ pub fn run() {
             clickup_token_set,
             clickup_token_clear,
             clickup_test,
+            clickup_intake_status,
+            clickup_intake_preview,
+            clickup_intake_snapshot,
+            clickup_intake_check,
+            clickup_intake_pull,
             set_preview_url,
             get_pipeline_run,
             pipeline_defs_list,
@@ -423,4 +451,32 @@ pub fn run() {
         .run(|app_handle, event| {
             windows::handle_run_event(app_handle, event);
         });
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    /// The token must be gone before `apply_login_path` can spawn the login
+    /// shell, or that shell inherits it.
+    #[test]
+    fn the_clickup_token_leaves_the_env_before_any_child_can_start() {
+        let names: Vec<&str> = STARTUP_ENV_STEPS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names,
+            [
+                "take_clickup_token",
+                "scrub_parent_claude_session",
+                "apply_login_path",
+                "isolate_webview_data_dir",
+            ]
+        );
+        // The names match the functions, so a reorder cannot hide behind them.
+        let first: fn() = clickup::secret::take_env_token;
+        assert!(std::ptr::fn_addr_eq(STARTUP_ENV_STEPS[0].1, first));
+        let scrub: fn() = shell_env::scrub_parent_claude_session;
+        assert!(std::ptr::fn_addr_eq(STARTUP_ENV_STEPS[1].1, scrub));
+        let shell: fn() = shell_env::apply_login_path;
+        assert!(std::ptr::fn_addr_eq(STARTUP_ENV_STEPS[2].1, shell));
+    }
 }

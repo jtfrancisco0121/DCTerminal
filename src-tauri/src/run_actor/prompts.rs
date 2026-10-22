@@ -21,7 +21,8 @@
 //!   gets its task's line from `tasks.json`; a new terminal for a round sent
 //!   back gets the findings.
 //! - The context also points at the run's hand-off files (`plan.md`,
-//!   `tasks.json`, `prs.json`, V4), so the stage can read them whole. Their
+//!   `tasks.json`, `prs.json`, V4, and `tickets.json` when the run started
+//!   from ClickUp tickets, C2), so the stage can read them whole. Their
 //!   content stays in the fields too: a role's template requires its plan
 //!   field, and a stage may not be allowed to read outside its folder.
 
@@ -56,8 +57,57 @@ pub struct StageSources {
     pub task_type: Option<String>,
     pub cwd: String,
     /// The run's hand-off files that exist, as (what, path): the plan, the
-    /// tasks, the pull requests.
+    /// tasks, the pull requests, and the ClickUp tickets ([`TICKETS_LABEL`]).
     pub run_files: Vec<(String, String)>,
+}
+
+/// The `run_files` entry for the run's `tickets.json` (C2).
+pub const TICKETS_LABEL: &str = "Tickets";
+
+/// Where an intake note goes in a stage's form (C2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntakeSlot {
+    /// The context field (`additionalContext`, …).
+    Context,
+    /// The request field (`request`, `description`, …).
+    Request,
+}
+
+/// Puts `note` first in the first of `slots` that `role` has, keeping what
+/// you typed after it. `false` when the role has none of them, so the
+/// caller adds the note after the merged prompt instead.
+///
+/// An engine-2 run's first stage gets the `tickets.json` note in its
+/// context, so the request you typed or dictated stays as it is; a start
+/// with no run folder gets the summary in its request (C2).
+pub fn place_intake_note(role: &Role, values: &mut HashMap<String, String>, note: &str, slots: &[IntakeSlot]) -> bool {
+    let note = note.trim();
+    if note.is_empty() {
+        return true;
+    }
+    let key = slots.iter().find_map(|wanted| {
+        slot(
+            role,
+            match wanted {
+                IntakeSlot::Context => CONTEXT_KEYS,
+                IntakeSlot::Request => REQUEST_KEYS,
+            },
+        )
+    });
+    let Some(key) = key else { return false };
+    let before = answer(values, &key);
+    if !before.contains(note) {
+        values.insert(key, join(&[note.to_string(), before]));
+    }
+    true
+}
+
+/// The note pointing a reopened first stage at `tickets.json`, when its
+/// form does not name the file already.
+fn tickets_pointer(src: &StageSources, context: &str) -> Option<String> {
+    let (_, path) = src.run_files.iter().find(|(what, _)| what == TICKETS_LABEL)?;
+    (!context.contains(path.as_str()))
+        .then(|| format!("Tickets from ClickUp (this run's intake snapshot): {path}"))
 }
 
 /// A stage's form values, the text recorded as its hand-off on the run, and
@@ -217,6 +267,14 @@ pub fn stage_values(role: &Role, reviewer: bool, src: &StageSources) -> StageVal
     if role.id == src.first_role && !src.first_answers.is_empty() {
         let mut values = src.first_answers.clone();
         values.insert("cwd".into(), src.cwd.clone());
+        // A run that started from ClickUp tickets: the form points at them
+        // (C2). Its start put the note there; this covers a form without it.
+        if let Some(key) = context_slot.as_ref() {
+            let before = answer(&values, key);
+            if let Some(pointer) = tickets_pointer(src, &before) {
+                values.insert(key.clone(), join(&[pointer, before]));
+            }
+        }
         if let (Some(key), Some(findings)) = (context_slot.as_ref(), findings.as_ref()) {
             let before = answer(&values, key);
             values.insert(key.clone(), join(&[findings.clone(), before]));

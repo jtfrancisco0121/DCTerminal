@@ -89,9 +89,10 @@ impl GhApi for GhCli {
     }
 }
 
-/// Runs `gh <args>` with no shell, stdin closed, no prompts and a deadline.
-/// The whole process tree is killed at the deadline. Returns stdout, stderr.
-pub fn run_gh(gh: &Path, args: &[String], timeout: Duration) -> Result<(String, String), String> {
+/// `gh <args>` with no prompts, no colour, no pager, stdin closed, and the
+/// caller's `GH_HOST` / `GH_REPO` dropped so they cannot redirect a call.
+/// Separate from [`run_gh`] so a test can check the env without `set_var`.
+fn gh_command(gh: &Path, args: &[String]) -> Command {
     let mut command = Command::new(gh);
     command
         .args(args)
@@ -104,6 +105,13 @@ pub fn run_gh(gh: &Path, args: &[String], timeout: Duration) -> Result<(String, 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    command
+}
+
+/// Runs `gh <args>` with no shell, stdin closed, no prompts and a deadline.
+/// The whole process tree is killed at the deadline. Returns stdout, stderr.
+pub fn run_gh(gh: &Path, args: &[String], timeout: Duration) -> Result<(String, String), String> {
+    let mut command = gh_command(gh, args);
     prepare_command(&mut command);
     let mut child = command
         .spawn()
@@ -345,10 +353,23 @@ mod tests {
         let gh = script(
             "printf 'HTTP/2.0 200 OK\\r\\n\\r\\n%s|%s|%s|%s' \"$GH_PROMPT_DISABLED\" \"$NO_COLOR\" \"$GH_PAGER\" \"${GH_HOST:-unset}\"",
         );
-        std::env::set_var("GH_HOST", "example.invalid");
         let response = GhCli::new(gh).get("user", None).unwrap();
-        std::env::remove_var("GH_HOST");
         assert_eq!(response.body, "1|1|cat|unset");
+    }
+
+    /// `GH_HOST` / `GH_REPO` are removed from the child's env. Checked on the
+    /// `Command` rather than by setting them here: `set_var` races the other
+    /// tests' threads.
+    #[test]
+    fn gh_host_and_repo_are_never_passed_to_gh() {
+        let command = gh_command(Path::new("gh"), &[]);
+        let envs: Vec<_> = command.get_envs().collect();
+        for name in ["GH_HOST", "GH_REPO"] {
+            assert!(
+                envs.contains(&(std::ffi::OsStr::new(name), None)),
+                "{name} is not removed"
+            );
+        }
     }
 
     #[cfg(unix)]

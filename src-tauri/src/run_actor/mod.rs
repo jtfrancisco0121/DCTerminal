@@ -48,7 +48,7 @@
 
 mod actor;
 pub(crate) mod app_host;
-mod prompts;
+pub(crate) mod prompts;
 #[cfg(test)]
 mod tests;
 

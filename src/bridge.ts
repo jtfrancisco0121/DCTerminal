@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow, type CloseRequestedEvent } from "@tauri-apps/api/window";
 import { ensureWindow } from "./windowScope";
+import type { IntakeRef as ClickUpIntakeRefIn, RefProblem as ClickUpRefProblemIn } from "./clickup/intakeRefs";
 import type { NotificationSettings } from "./notify/agentNotify";
 import type { CustomColors } from "./theme";
 import type {
@@ -1157,6 +1158,8 @@ export type ClickUpAccountStatus = {
   source: ClickUpTokenSource;
   workspaceId?: string;
   workspaceName?: string;
+  /** DCT_CLICKUP_TOKEN was set at startup but was not a token, so it is not used. */
+  envRejected?: boolean;
 };
 
 export type ClickUpWorkspaceOption = { id: string; name: string };
@@ -1187,6 +1190,123 @@ export function clickupTokenClear(accountId: string): Promise<ClickUpAccountStat
  */
 export function clickupTest(accountId: string, workspaceId?: string): Promise<ClickUpTestResult> {
   return invoke("clickup_test", { accountId, workspaceId: workspaceId ?? null });
+}
+
+/** C2: whether this window's Claude account can take tickets from ClickUp. Never the token. */
+export type ClickUpIntakeStatus = {
+  accountId: string;
+  accountName: string;
+  /** A token and a workspace are both set. */
+  configured: boolean;
+  workspaceName?: string;
+};
+
+export type { IntakeRef as ClickUpIntakeRef, RefProblem as ClickUpRefProblem } from "./clickup/intakeRefs";
+
+export type ClickUpPriority = "urgent" | "high" | "normal" | "low" | "none";
+
+/**
+ * Which tickets a round takes. Closed and done tickets are always left out.
+ * Each empty list keeps everything: `statuses` match a ticket's status name
+ * (any case), `tags` keep a ticket with any of them.
+ */
+export type ClickUpIntakeFilters = { priorities: ClickUpPriority[]; statuses: string[]; tags: string[] };
+
+export type ClickUpTicketRow = {
+  id: string;
+  customId?: string;
+  title: string;
+  priority: ClickUpPriority | string;
+  status: string;
+  /** ClickUp's status type: `open`, `custom`, `done` or `closed`. */
+  statusType: string;
+  url: string;
+};
+
+export type ClickUpExcludedTicket = ClickUpTicketRow & { reason: string };
+
+export type ClickUpIntakeParent = {
+  kind: "task" | "list";
+  id: string;
+  title: string;
+  url: string;
+  tickets: number;
+};
+
+/** What Fetch found: the parents, the tickets a round takes and the ones it leaves out. */
+export type ClickUpIntakePreview = {
+  parents: ClickUpIntakeParent[];
+  tickets: ClickUpTicketRow[];
+  excluded: ClickUpExcludedTicket[];
+  problems: ClickUpRefProblemIn[];
+  /** The open statuses the fetched tickets are in, for the status filter. */
+  seenStatuses: string[];
+  /** The tags the fetched tickets carry, for the tag filter. */
+  seenTags: string[];
+  /**
+   * More tickets matched than one intake takes (100): how many. `tickets`
+   * and `excluded` are then empty; narrow the filters and Fetch again.
+   */
+  overCap?: number;
+};
+
+/** A snapshot Start fetched, waiting for the start that passes its `intakeId`. */
+export type ClickUpIntakeStaged = {
+  intakeId: string;
+  tickets: number;
+  excluded: number;
+  problems: ClickUpRefProblemIn[];
+};
+
+export type ClickUpChangedTicket = {
+  id: string;
+  title: string;
+  dateUpdated?: string;
+  /** ClickUp no longer has it, or this account cannot see it. */
+  missing?: boolean;
+};
+
+/** The tickets ClickUp edited since a run's intake. */
+export type ClickUpIntakeCheck = {
+  checkedAt: string;
+  tickets: number;
+  changed: ClickUpChangedTicket[];
+};
+
+/** C2: whether this window's Claude account has ClickUp set up (Settings › Integrations). */
+export async function clickupIntakeStatus(): Promise<ClickUpIntakeStatus> {
+  return invoke("clickup_intake_status", { windowId: await windowId() });
+}
+
+/** C2 Fetch: what the pasted refs hold, read with this window's account only. No comments yet. */
+export async function clickupIntakePreview(
+  refs: ClickUpIntakeRefIn[],
+  filters: ClickUpIntakeFilters,
+): Promise<ClickUpIntakePreview> {
+  return invoke("clickup_intake_preview", { windowId: await windowId(), refs, filters });
+}
+
+/**
+ * C2 Start: reads the ticked tickets again with their comments and keeps the
+ * snapshot for the start that passes its `intakeId` (`roleTerminalStart`).
+ * `ticketIds` null keeps every ticket the filters keep.
+ */
+export async function clickupIntakeSnapshot(
+  refs: ClickUpIntakeRefIn[],
+  filters: ClickUpIntakeFilters,
+  ticketIds: string[] | null,
+): Promise<ClickUpIntakeStaged> {
+  return invoke("clickup_intake_snapshot", { windowId: await windowId(), refs, filters, ticketIds });
+}
+
+/** C2: the tickets ClickUp edited since the run's intake (at most one ClickUp check every 5 minutes); null when the run did not start from ClickUp. */
+export function clickupIntakeCheck(runId: string): Promise<ClickUpIntakeCheck | null> {
+  return invoke("clickup_intake_check", { runId });
+}
+
+/** C2 Pull again: re-reads those tickets into the run's `tickets.json` and notes it on the Timeline. Running stages are not prompted. */
+export function clickupIntakePull(runId: string, ticketIds: string[]): Promise<ClickUpIntakeCheck> {
+  return invoke("clickup_intake_pull", { runId, ticketIds });
 }
 
 /** Opens the window's GitHub tab, or focuses it when one is already open. */
@@ -1900,6 +2020,11 @@ export async function roleTerminalStart(input: {
    * run before the launch, so the first stage launches with the bridge too.
    */
   startChain?: "eagle1" | "eagle2" | null;
+  /**
+   * C2: the ClickUp tickets Start fetched (`clickupIntakeSnapshot`). An
+   * engine-2 run's first stage gets them as the run's `tickets.json`.
+   */
+  intakeId?: string | null;
 }): Promise<TerminalStartResult> {
   return invoke<TerminalStartResult>("role_terminal_start", {
     input: {
@@ -1913,6 +2038,7 @@ export async function roleTerminalStart(input: {
       provider: input.provider ?? null,
       chain: input.chain ?? null,
       startChain: input.startChain ?? null,
+      intakeId: input.intakeId ?? null,
     },
     onOutput: input.onOutput,
   });

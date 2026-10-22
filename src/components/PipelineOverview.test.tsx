@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge", () => ({
   getPipelineRun: vi.fn(),
+  clickupIntakeCheck: vi.fn(async () => null),
   listenChainRunUpdated: vi.fn(async () => () => {}),
   pipelinePromotePlan: vi.fn(async () => {}),
   pipelineSetCandidatePlan: vi.fn(async () => {}),
