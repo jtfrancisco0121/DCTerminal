@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { PipelineRun } from "../bridge";
-import { latestVerification, MAX_VERIFY_NOTE_CHARS, pendingVerify, verifyAction, verifyNoteProblem } from "./verify";
+import {
+  latestVerification,
+  MAX_VERIFY_NOTE_CHARS,
+  pendingVerify,
+  verifyAction,
+  verifyNoteProblem,
+  verifyWaitKey,
+} from "./verify";
 
 const STEPS = "Run the qa128-ml Playwright project on the Windows staging build.";
 
@@ -58,10 +65,18 @@ describe("verify gates (L2)", () => {
     expect(pendingVerify(plain)).toMatchObject({ lane: null, laneTitle: null, repo: null, prs: [] });
   });
 
+  it("keys a wait by its stage, lane and start, and none when the run waits on nothing", () => {
+    expect(verifyWaitKey(run())).toBe("implementer@pr1@2026-10-22T10:00:00Z");
+    expect(verifyWaitKey(run({ status: "running", stopReason: null }))).toBe("");
+  });
+
   it("needs a note to fail, of at most 4000 characters", () => {
     expect(verifyNoteProblem("  ")).toBe("Say what failed: the note goes back to the stage.");
     expect(verifyNoteProblem("x".repeat(MAX_VERIFY_NOTE_CHARS + 1))).toContain("longer than 4000");
     expect(verifyNoteProblem("The session list is empty.")).toBeNull();
+    // Counted as Rust counts them: code points.
+    expect(verifyNoteProblem("😀".repeat(MAX_VERIFY_NOTE_CHARS))).toBeNull();
+    expect(verifyNoteProblem("😀".repeat(MAX_VERIFY_NOTE_CHARS + 1))).toContain("longer than 4000");
   });
 
   it("builds the run actor's verify message", () => {

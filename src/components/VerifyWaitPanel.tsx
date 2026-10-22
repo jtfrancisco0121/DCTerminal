@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { pipelineActorMessage, type PipelineRun } from "../bridge";
-import { pendingVerify, verifyAction, verifyNoteProblem } from "../pipeline/verify";
+import { pendingVerify, verifyAction, verifyNoteProblem, verifyWaitKey } from "../pipeline/verify";
 import { errorText } from "./InlineNotice";
 
 type Props = {
@@ -23,6 +23,16 @@ export function VerifyWaitPanel({ run, onDone, onNotice }: Props) {
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const wait = pendingVerify(run);
+  // A new wait (another lane, or the same stage waiting again) starts with
+  // the note box closed and empty.
+  const waitId = verifyWaitKey(run);
+  const [shownFor, setShownFor] = useState(waitId);
+  if (shownFor !== waitId) {
+    setShownFor(waitId);
+    setFailing(false);
+    setNote("");
+    setTouched(false);
+  }
   if (!wait) return null;
 
   const problem = touched ? verifyNoteProblem(note) : null;
@@ -54,6 +64,7 @@ export function VerifyWaitPanel({ run, onDone, onNotice }: Props) {
         {where && <span className="hint"> · {where}</span>}
       </h3>
       <p className="hint">The checks passed. Carry out these steps yourself, then mark the result.</p>
+      <p className="hint">Handing the stage on yourself skips this verification: nothing records it as verified.</p>
       <pre className="pipeline-verify-steps">{wait.steps}</pre>
       {wait.prs.length > 0 && (
         <ul className="pipeline-verify-prs" aria-label="Pull requests to verify">

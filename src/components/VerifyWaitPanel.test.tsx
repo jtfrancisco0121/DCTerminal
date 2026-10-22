@@ -106,6 +106,31 @@ describe("VerifyWaitPanel (L2)", () => {
     expect(onDone).toHaveBeenCalled();
   });
 
+  it("says that handing on yourself skips the verification", () => {
+    render(<VerifyWaitPanel run={waitingRun()} onDone={vi.fn()} onNotice={vi.fn()} />);
+    expect(screen.getByText(/Handing the stage on yourself skips this verification/)).toBeTruthy();
+  });
+
+  it("starts a new wait with the note box closed and empty", () => {
+    const first = waitingRun();
+    const { rerender } = render(<VerifyWaitPanel run={first} onDone={vi.fn()} onNotice={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Failed" }));
+    fireEvent.change(screen.getByLabelText("What failed"), { target: { value: "Old note." } });
+    // The same wait again (a reload) keeps what you typed.
+    rerender(<VerifyWaitPanel run={waitingRun()} onDone={vi.fn()} onNotice={vi.fn()} />);
+    expect((screen.getByLabelText("What failed") as HTMLTextAreaElement).value).toBe("Old note.");
+    // Another lane's wait does not.
+    const next = waitingRun({
+      lanes: [{ id: "pr2", title: "PR2 — Audit log", status: "active", stage: "implementer", round: 1, tabIds: {}, repo: "backend" }],
+    });
+    next.autopilot!.verify = { ...next.autopilot!.verify!, lane: "pr2", at: "2026-10-22T11:00:00Z" };
+    rerender(<VerifyWaitPanel run={next} onDone={vi.fn()} onNotice={vi.fn()} />);
+    expect(screen.queryByLabelText("What failed")).toBeNull();
+    expect(screen.getByRole("region", { name: "Verification" }).textContent).toContain("PR2 — Audit log");
+    fireEvent.click(screen.getByRole("button", { name: "Failed" }));
+    expect((screen.getByLabelText("What failed") as HTMLTextAreaElement).value).toBe("");
+  });
+
   it("renders nothing unless the run waits on a verify gate", () => {
     const { container, rerender } = render(
       <VerifyWaitPanel run={waitingRun({ stopReason: "stalled" })} onDone={vi.fn()} onNotice={vi.fn()} />,

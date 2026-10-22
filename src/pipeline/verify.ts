@@ -6,6 +6,7 @@
  * `VerifyWaitPanel` renders it and sends the answer to the run actor.
  */
 import type { ActorAction, PipelineRun, VerifyRecord } from "../bridge";
+import { charCount } from "./repos";
 
 /** As `MAX_VERIFY_NOTE_CHARS` in Rust (`pipelines/verify.rs`). */
 export const MAX_VERIFY_NOTE_CHARS = 4000;
@@ -39,11 +40,18 @@ export function pendingVerify(run: PipelineRun): PendingVerify | null {
   };
 }
 
+/** One wait from another (stage, lane, when it began); "" when the run waits on none. */
+export function verifyWaitKey(run: PipelineRun): string {
+  const wait = run.autopilot?.verify;
+  if (!wait || !pendingVerify(run)) return "";
+  return `${wait.stageId}@${wait.lane ?? ""}@${wait.at}`;
+}
+
 /** What is wrong with the note sent with Failed; null when it can be sent. */
 export function verifyNoteProblem(note: string): string | null {
   const trimmed = note.trim();
   if (!trimmed) return "Say what failed: the note goes back to the stage.";
-  if (trimmed.length > MAX_VERIFY_NOTE_CHARS) return `The note is longer than ${MAX_VERIFY_NOTE_CHARS} characters.`;
+  if (charCount(trimmed) > MAX_VERIFY_NOTE_CHARS) return `The note is longer than ${MAX_VERIFY_NOTE_CHARS} characters.`;
   return null;
 }
 

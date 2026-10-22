@@ -29,6 +29,7 @@ import { lanesFromReply, lanesFromTasks } from "../pipeline/prPlan";
 import { errorText } from "./InlineNotice";
 import { RunLanes } from "./RunLanes";
 import { VerifyWaitPanel } from "./VerifyWaitPanel";
+import { verifyWaitKey } from "../pipeline/verify";
 import {
   coalescedReload,
   isForRun,
@@ -507,7 +508,7 @@ export function PipelineOverview({
               {run.autopilot.waiting}
             </p>
           )}
-          {autopilotOn && <VerifyWaitPanel run={run} onDone={reload} onNotice={onNotice} />}
+          {autopilotOn && <VerifyWaitPanel key={verifyWaitKey(run)} run={run} onDone={reload} onNotice={onNotice} />}
           {autopilotOn && run.status === "waiting" && run.stopReason === "app_restarted" && onContinue && (
             <div className="button-row">
               <button
