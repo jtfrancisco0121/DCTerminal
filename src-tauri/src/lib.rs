@@ -126,6 +126,7 @@ use pty::{
     set_terminal_settings, shell_terminal_start, terminal_plan_file, PtyRegistry,
 };
 use std::sync::Mutex;
+use store::repos_settings::{get_repos_settings, set_repos_settings};
 use store::{
     get_notification_settings, get_ui_settings, set_notification_settings, set_ui_settings,
     ActivityStore, FormsStore, HandoffStore, ProjectsStore, PromptStore, RolesStore, ScratchStore,
@@ -382,6 +383,8 @@ pub fn run() {
             set_notification_settings,
             get_ui_settings,
             set_ui_settings,
+            get_repos_settings,
+            set_repos_settings,
             git_repo_info,
             worktree_tab_new,
             worktree_tab_check,
