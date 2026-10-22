@@ -490,7 +490,7 @@ mod tests {
 
     impl Env {
         fn deps<'a>(&'a self, api: &'a Recorded) -> Deps<'a> {
-            Deps { settings: &self.settings, secrets: &self.secrets, env: None, transport: api, gate: &self.gate, clock: &self.clock }
+            Deps { settings: &self.settings, secrets: &self.secrets, env: None, env_rejected: false, transport: api, gate: &self.gate, clock: &self.clock }
         }
 
         fn runs(&self) -> PathBuf {
