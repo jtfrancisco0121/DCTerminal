@@ -204,7 +204,7 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
           const options = read && "statuses" in read ? read.statuses.map((s) => s.status) : [];
           if (p.status && !options.includes(p.status)) options.unshift(p.status);
           const draft = drafts[id];
-          const unsent = sentAsIs(p) && pendingComment(p) === undefined;
+          const alreadySent = sentAsIs(p) && pendingComment(p) === undefined;
           return (
             <li
               key={id}
@@ -216,8 +216,8 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
                   <input
                     type="checkbox"
                     checked={p.ticked && !p.skipped}
-                    disabled={locked || !!p.skipped || (unsent && !p.ticked)}
-                    title={unsent ? "Already sent. Edit the comment or status to send it again." : undefined}
+                    disabled={locked || !!p.skipped || (alreadySent && !p.ticked)}
+                    title={alreadySent ? "Already sent. Edit the comment or status to send it again." : undefined}
                     onChange={(event) => {
                       const comment = pendingComment(p);
                       void edit(id, { ticked: event.target.checked, ...(comment !== undefined ? { comment } : {}) });
