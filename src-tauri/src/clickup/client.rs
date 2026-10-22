@@ -921,7 +921,6 @@ pub(crate) mod tests {
         assert_eq!(api.paths().len(), 1);
     }
 
-
     /// Counts calls in flight; each one takes a moment.
     struct Slow {
         now: AtomicUsize,
