@@ -111,7 +111,7 @@ fn mark_verified_passes_the_gate_and_the_lane_moves_on() {
     // The actor decides the same turn again, under its own key.
     let d = decide(&eagle1(), &mut r, &report(Some("pr1"), "tab|bridge|t1#verify1"));
     assert_eq!((d.action.as_str(), d.stage_id.as_deref()), ("advance", Some("pr_reviewer")), "{}", d.reason);
-    assert!(r.autopilot.as_ref().unwrap().gate_retries.get("implementer@pr1").is_none(), "a full pass resets the retries");
+    assert!(!r.autopilot.as_ref().unwrap().gate_retries.contains_key("implementer@pr1"), "a full pass resets the retries");
     // Saved and read back, the record stays (C3 reads it).
     let back: PipelineRun = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
     assert_eq!(back.verifications, r.verifications);

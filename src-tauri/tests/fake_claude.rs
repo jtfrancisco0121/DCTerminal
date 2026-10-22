@@ -2714,16 +2714,16 @@ mod run_actor {
         assert_eq!(answers[0].2, answers[1].2, "both answers name the backend Implementer's tab");
 
         // Each answer is one record on the run, and the lane's latest says verified.
-        let records: Vec<(&str, Option<&str>, Option<&str>, u32, u32, Option<&str>)> = run
+        let records: Vec<String> = run
             .verifications
             .iter()
-            .map(|v| (v.result.as_str(), v.lane.as_deref(), v.repo.as_deref(), v.round, v.attempt, v.note.as_deref()))
+            .map(|v| format!("{} {:?} {:?} r{} a{} {:?}", v.result, v.lane, v.repo, v.round, v.attempt, v.note))
             .collect();
         assert_eq!(
             records,
             [
-                ("failed", Some("pr1"), Some("backend"), 1, 1, Some(VERIFY_NOTE)),
-                ("verified", Some("pr1"), Some("backend"), 1, 2, None),
+                format!("failed Some(\"pr1\") Some(\"backend\") r1 a1 Some({VERIFY_NOTE:?})"),
+                "verified Some(\"pr1\") Some(\"backend\") r1 a2 None".to_string(),
             ]
         );
         assert!(run.latest_verification(Some("pr1")).is_some_and(|v| v.verified() && v.by == "you"));
