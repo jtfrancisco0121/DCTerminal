@@ -182,6 +182,15 @@ pub fn new_draft_tab(
     let mut store = store.lock().map_err(|e| e.to_string())?;
     store.bind_window(window_id.as_deref());
     let tab_id = store.create_draft_tab(&role, cwd.trim(), true, None)?;
+    // F3: starting Eagle-Eye 1, 2 or L by name picks its size (M, S or L).
+    if let Some(run_id) = store.tab_by_id(&tab_id).and_then(|tab| tab.chain.as_ref()).and_then(|chain| store.chain_run_id(&chain.chain_id)) {
+        if let Some(run) = store.pipeline_run_by_id_mut(&run_id).filter(|run| run.size.is_none()) {
+            if let Some(size) = crate::pipelines::sizes::size_of_pipeline(&run.kind) {
+                run.size = Some(size.to_string());
+                store.save()?;
+            }
+        }
+    }
     let tab = store
         .tab_by_id(&tab_id)
         .cloned()

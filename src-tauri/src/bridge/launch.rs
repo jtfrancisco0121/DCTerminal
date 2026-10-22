@@ -142,6 +142,8 @@ fn stage_kind(stage: &crate::pipelines::StageDef) -> Option<ResultKind> {
         StageKind::Implementer => Some(ResultKind::Implementer),
         StageKind::Reviewer => stage.also_reviewers.is_empty().then_some(ResultKind::Reviewer),
         StageKind::Generic => None,
+        // F1: reports its documents through `submit_result`.
+        StageKind::Artifact => Some(ResultKind::Artifact),
     }
 }
 
@@ -267,7 +269,7 @@ pub fn hook_settings(
     let on = |event: &str| hook(program, run_dir, run_id, stage_key, tab_id, event);
     let pre_tool = match kind {
         ResultKind::Planner | ResultKind::Round => "ExitPlanMode",
-        ResultKind::Reviewer | ResultKind::Implementer => FULL_TOOL_NAME,
+        ResultKind::Reviewer | ResultKind::Implementer | ResultKind::Artifact => FULL_TOOL_NAME,
     };
     json!({
         "hooks": {
@@ -312,17 +314,23 @@ pub fn launch_flags(
     stage_key: &str,
     tab_id: &str,
 ) -> BridgeFlags {
-    BridgeFlags {
-        args: if matches!(kind, ResultKind::Planner | ResultKind::Round) {
-            Vec::new()
-        } else {
-            vec![
+    let mut args = if matches!(kind, ResultKind::Planner | ResultKind::Round) {
+        Vec::new()
+    } else {
+        vec![
             "--allowedTools".to_string(),
             FULL_TOOL_NAME.to_string(),
             "--mcp-config".to_string(),
             mcp_config(program, run_dir, run_id, stage_key, tab_id).to_string(),
-            ]
-        },
+        ]
+    };
+    // F1: an artifact stage writes its documents into the run folder, which
+    // is outside its working folder, so Claude Code is given that folder.
+    if kind == ResultKind::Artifact {
+        args.splice(0..0, ["--add-dir".to_string(), run_dir.display().to_string()]);
+    }
+    BridgeFlags {
+        args,
         hooks: hook_settings(kind, program, run_dir, run_id, stage_key, tab_id),
     }
 }

@@ -20,6 +20,8 @@ pub mod lane_gates;
 pub mod verify;
 pub mod stories;
 pub mod recovery;
+pub mod artifacts;
+pub mod sizes;
 #[cfg(test)]
 mod tests;
 
@@ -33,6 +35,8 @@ const EAGLE1_JSON: &str = include_str!("../../../docs/pipelines/eagle1.json");
 const EAGLE2_JSON: &str = include_str!("../../../docs/pipelines/eagle2.json");
 /// The QA round (R1): Triage, its Plan Reviewer, then your approval.
 const ROUND_JSON: &str = include_str!("../../../docs/pipelines/round.json");
+/// F2: Analyst → PM → Architect, then Eagle-Eye 1's stages.
+const EAGLE_L_JSON: &str = include_str!("../../../docs/pipelines/eagle-eye-l.json");
 
 pub const DEFAULT_PAUSE_AT_USAGE_PERCENT: u8 = 90;
 /// Minutes a Working stage may print nothing and write no log before the
@@ -147,6 +151,10 @@ pub enum StageKind {
     Reviewer,
     Implementer,
     Generic,
+    /// F1: writes documents into the run folder (a brief, a PRD, an
+    /// architecture) and reports them through `submit_result`; runs in
+    /// `auto` mode and comes before the Implementer.
+    Artifact,
 }
 
 impl StageKind {
@@ -157,6 +165,7 @@ impl StageKind {
             StageKind::Reviewer => "reviewer",
             StageKind::Implementer => "implementer",
             StageKind::Generic => "generic",
+            StageKind::Artifact => "artifact",
         }
     }
 
@@ -167,6 +176,8 @@ impl StageKind {
             "role_planner" | "role_triage" => Some(StageKind::Planner),
             "role_plan_reviewer" | "role_pr_reviewer" => Some(StageKind::Reviewer),
             "role_implementer" => Some(StageKind::Implementer),
+            // F2: the document roles write into the run folder.
+            "role_analyst" | "role_pm" | "role_architect" => Some(StageKind::Artifact),
             _ => None,
         }
     }
@@ -332,7 +343,14 @@ fn parse_builtin(json: &str) -> PipelineDef {
 
 pub fn builtins() -> &'static [PipelineDef] {
     static BUILTINS: OnceLock<Vec<PipelineDef>> = OnceLock::new();
-    BUILTINS.get_or_init(|| vec![parse_builtin(EAGLE1_JSON), parse_builtin(EAGLE2_JSON), parse_builtin(ROUND_JSON)])
+    BUILTINS.get_or_init(|| {
+        vec![
+            parse_builtin(EAGLE1_JSON),
+            parse_builtin(EAGLE2_JSON),
+            parse_builtin(EAGLE_L_JSON),
+            parse_builtin(ROUND_JSON),
+        ]
+    })
 }
 
 fn user_registry() -> &'static RwLock<Vec<PipelineDef>> {
@@ -535,6 +553,16 @@ pub fn validate_user_pipelines_with(defs: &[PipelineDef], roles: Option<&HashSet
     }
 }
 
+/// [`check_pipeline`] for one pipeline of yours, role ids not checked (tests).
+#[cfg(test)]
+pub(crate) fn check_pipeline_for_test(def: &PipelineDef) -> Result<(), String> {
+    let builtin_keys: HashSet<String> = builtins()
+        .iter()
+        .flat_map(|def| [def.id.clone(), def.run_kind().to_string()])
+        .collect();
+    check_pipeline(def, &builtin_keys, None)
+}
+
 /// The first problem of one pipeline, on its own.
 fn check_pipeline(
     def: &PipelineDef,
@@ -631,6 +659,10 @@ fn check_pipeline(
                 stage.id,
                 stage.kind().label()
             ));
+        }
+        // F1: an artifact stage writes documents for the whole run.
+        if let Some(problem) = artifacts::stage_problem(def, index) {
+            return Err(problem);
         }
         if let Some(back) = &stage.loop_back {
             let earlier = def.stages[..index].iter().any(|s| s.id == back.to);

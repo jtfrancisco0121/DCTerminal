@@ -1,0 +1,33 @@
+{
+  "id": "eagle-eye-l",
+  "name": "Eagle-Eye L",
+  "description": "For a big new feature: a brief, a PRD and an architecture first, then plan, review the plan, implement it as draft pull requests, review the pull requests.",
+  "stages": [
+    { "id": "analyst", "roleId": "role_analyst", "kind": "artifact", "title": "Analyst" },
+    { "id": "pm", "roleId": "role_pm", "kind": "artifact", "title": "PM" },
+    { "id": "architect", "roleId": "role_architect", "kind": "artifact", "title": "Architect" },
+    { "id": "planner", "roleId": "role_planner", "kind": "planner", "title": "Planner" },
+    {
+      "id": "plan_reviewer",
+      "roleId": "role_plan_reviewer",
+      "kind": "reviewer",
+      "title": "Plan Reviewer",
+      "loopBack": { "to": "planner", "minSeverity": "MEDIUM" }
+    },
+    {
+      "id": "implementer",
+      "roleId": "role_implementer",
+      "kind": "implementer",
+      "title": "Implementer",
+      "checkpoint": true,
+      "gates": [{ "kind": "command", "run": "auto" }, { "kind": "pullRequest" }]
+    },
+    {
+      "id": "pr_reviewer",
+      "roleId": "role_pr_reviewer",
+      "kind": "reviewer",
+      "title": "PR Reviewer",
+      "loopBack": { "to": "implementer", "minSeverity": "MEDIUM" }
+    }
+  ]
+}
