@@ -414,6 +414,10 @@ export function installTauriMock(config: MockConfig): void {
     },
     github_status: () => ({ ...config.github.status, filters: state.githubFilters }),
     github_feed: () => config.github.feed,
+    // Settings › Integrations: one Claude account, no ClickUp token yet.
+    clickup_status: () => [
+      { accountId: "default", accountName: "Claude", configured: false, source: "none" },
+    ],
     github_push_commits: (a) =>
       config.github.commits[`${a.repo}@${a.head}`] ?? { commits: [], total: 0 },
     github_save_filters: (a) => {
