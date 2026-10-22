@@ -2756,4 +2756,257 @@ mod run_actor {
         assert_eq!(run.status, RunStatus::Complete);
         assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
     }
+
+    /// A plan of two independent tasks, both in the backend repo.
+    fn plan_two_backend_lanes() -> String {
+        let tasks = json!({ "tasks": [
+            { "id": "pr1", "title": "Session API", "dependsOn": [], "manual": false, "summary": "Add the session endpoint.", "repo": "backend" },
+            { "id": "pr2", "title": "Audit log", "dependsOn": [], "manual": false, "summary": "Log session events.", "repo": "backend" }
+        ] });
+        format!(
+            "# Plan: two backend changes\n\n## HANDOFF: Plan\n1. Session endpoint.\n2. Audit log.\n\n```json\n{tasks}\n```\n\n\
+             ## HANDOFF: Open questions\nNone.\n"
+        )
+    }
+
+    /// Overview › Fan out for `plan_two_backend_lanes`: a worktree and a
+    /// draft Implementer tab per lane in the backend repo, the lanes
+    /// recorded, nothing started. Returns `(lane, tab, worktree)`.
+    fn fan_out_two_backend_lanes(
+        host: &Arc<FakeHost>,
+        run: &PipelineRun,
+        actors: &RunActors<FakeHost>,
+        backend: &Path,
+    ) -> Vec<(String, String, PathBuf)> {
+        let reviewer = run.tab_ids["role_plan_reviewer"].clone();
+        let prefill = actors
+            .ask(
+                RUN,
+                UserAction::Prefill { source_tab_id: reviewer, target_role_id: "role_implementer".into() },
+                Duration::from_secs(30),
+            )
+            .expect("the hand-off form")
+            .prefill
+            .expect("prefilled");
+        let role = host.roles.iter().find(|r| r.id == "role_implementer").unwrap().clone();
+        let mut made = Vec::new();
+        for lane in ["pr1", "pr2"] {
+            let wt = dcterminal_lib::worktree::add_worktree(backend, &format!("{RUN}-{lane}"), true, None).expect("worktree");
+            let mut store = host.store.lock().unwrap();
+            let tab = store.create_worktree_tab(&role, wt.clone()).unwrap();
+            let mut values = prefill.values.clone();
+            values.insert("cwd".into(), wt.path.clone());
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = values;
+            made.push((lane.to_string(), tab, PathBuf::from(&wt.path)));
+        }
+        let mut store = host.store.lock().unwrap();
+        let lanes = vec![
+            LaneInput { id: "pr1".into(), title: "PR1 — Session API".into(), depends_on: vec![], repo: Some("backend".into()) },
+            LaneInput { id: "pr2".into(), title: "PR2 — Audit log".into(), depends_on: vec![], repo: Some("backend".into()) },
+        ];
+        fan_out(&mut store, RUN, "implementer", lanes).expect("fan out");
+        for (lane, tab, _) in &made {
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 3, total: 4, round: 1, lane: Some(lane.clone()) };
+            store.set_tab_chain(tab, Some(chain), Some(&prefill.handoff_text)).unwrap();
+        }
+        store.save().unwrap();
+        made
+    }
+
+    /// Start a lane's Implementer terminal, as `laneStartTerminal` does.
+    fn start_lane_terminal(host: &FakeHost, lane: &str, tab: &str, wt: &Path, session: &str) {
+        let stage_key = format!("implementer@{lane}");
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "implementer".into(),
+            role_id: "role_implementer".into(),
+            lane: Some(lane.into()),
+            stage_key: stage_key.clone(),
+            kind: ResultKind::Implementer,
+            autopilot: true,
+        };
+        {
+            let mut store = host.store.lock().unwrap();
+            store.set_tab_bridge(tab, Some(BridgeTag { run_id: RUN.into(), stage: stage_key.clone() })).unwrap();
+            store.remember_claude_terminal_session(tab, session).unwrap();
+            store.save().unwrap();
+        }
+        let run_dir = prepare_stage(&host.runs, &bridge, tab).expect("prepare the lane");
+        write_run_repos(&run_dir, &host.repos).expect("repos.json");
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: tab.into(),
+                role_id: "role_implementer".into(),
+                cwd: wt.to_path_buf(),
+                prompt: format!("Implement {lane} in its worktree."),
+                session_id: session.into(),
+                bridge: Some(launch_flags(ResultKind::Implementer, Path::new(DCTERMINAL), &run_dir, RUN, &stage_key, tab)),
+            },
+            &implemented_in(lane, &format!("https://github.com/acme/backend/pull/{}", &lane[2..])),
+            false,
+        );
+    }
+
+    /// Review fix (L2): two independent lanes in a repo with verify steps.
+    /// Lane A waits on its verification; lane B's Implementer finishes
+    /// during that wait and is held, not decided. Once A is marked
+    /// verified, B's turn is taken up (its check runs), B waits on its own
+    /// verification, and only once that is marked verified does B go on to
+    /// its PR Reviewer.
+    #[test]
+    fn a_lane_that_finishes_during_another_lanes_verify_wait_gets_its_own_verification() {
+        let data = TempDir::new("actor_l2_two_data");
+        let home = FakeHome::new("actor_l2_two");
+        let parent = TempDir::new("actor_l2_two_repos");
+        let backend = repo(&parent, "backend");
+        let repos = vec![RepoEntry {
+            name: "backend".into(),
+            folder: backend.display().to_string(),
+            check: Some("echo 'ok server/session 0.2s'".into()),
+            verify: Some(BACKEND_VERIFY.into()),
+        }];
+        let scenarios = HashMap::from([
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+            ("role_implementer".to_string(), VecDeque::new()),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([])), reviewed("APPROVED", json!([]))])),
+        ]);
+        let host = host_with(data, home, repos, scenarios);
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
+        let actors = RunActors::new(host.clone());
+
+        // The Planner, with the two-lane plan.
+        let cwd = host.home.cwd.path().display().to_string();
+        let planner = {
+            let mut store = host.store.lock().unwrap();
+            let role = host.roles.iter().find(|r| r.id == "role_planner").unwrap();
+            let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = HashMap::from([
+                ("cwd".to_string(), cwd.clone()),
+                ("taskType".to_string(), "Feature".to_string()),
+                ("title".to_string(), "Sessions".to_string()),
+                ("request".to_string(), "Add sessions and an audit log.".to_string()),
+            ]);
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 1, total: 4, round: 1, lane: None };
+            store.set_tab_chain(&tab, Some(chain), None).unwrap();
+            store.pipeline_run_by_id_mut(RUN).expect("the run").set_autopilot_enabled(true);
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, PLANNER_SID).unwrap();
+            store.save().unwrap();
+            tab
+        };
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "planner".into(),
+            role_id: "role_planner".into(),
+            lane: None,
+            stage_key: "planner".into(),
+            kind: ResultKind::Planner,
+            autopilot: true,
+        };
+        let run_dir = prepare_stage(&host.runs, &bridge, &planner).expect("prepare the Planner");
+        write_run_repos(&run_dir, &host.repos).expect("repos.json");
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: planner.clone(),
+                role_id: "role_planner".into(),
+                cwd: host.home.cwd.path().to_path_buf(),
+                prompt: "Plan the two backend changes.".into(),
+                session_id: PLANNER_SID.into(),
+                bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
+            },
+            &json!({ "turns": [{ "steps": [
+                { "tool": "ExitPlanMode", "input": { "plan": plan_two_backend_lanes() }, "permission": true },
+                { "reply": "Two independent backend lanes." }
+            ] }] }),
+            false,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut lanes: Vec<(String, String, PathBuf)> = Vec::new();
+        let mut b_started = false;
+        let mut answered: Vec<String> = Vec::new();
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            let wait = run.autopilot.as_ref().and_then(|a| a.verify.clone());
+            let held_b = run.events.iter().any(|e| {
+                e.stage_id.as_deref() == Some("implementer") && e.summary.contains("finished while the run waits on your verification")
+            });
+            match (run.status, run.stop_reason) {
+                (RunStatus::Complete, _) => break,
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if lanes.is_empty() => {
+                    lanes = fan_out_two_backend_lanes(&host, &run, &actors, &backend);
+                    let (lane, tab, wt) = &lanes[0];
+                    start_lane_terminal(&host, lane, tab, wt, "8c3f5d21-2b3c-4d4e-9f50-000000000201");
+                }
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if wait.is_some() => {
+                    let wait = wait.unwrap();
+                    let lane = wait.lane.clone().expect("a lane");
+                    if lane == "pr1" && !b_started {
+                        // Lane B finishes its turn while A waits on you.
+                        let (lane_b, tab, wt) = &lanes[1];
+                        start_lane_terminal(&host, lane_b, tab, wt, "8c3f5d21-2b3c-4d4e-9f50-000000000202");
+                        b_started = true;
+                    } else if lane == "pr1" && !held_b {
+                        // Not yet: wait for B's turn to be held.
+                    } else {
+                        actors
+                            .ask(
+                                RUN,
+                                UserAction::Verify { stage_id: "implementer".into(), lane: Some(lane.clone()), verified: true, note: None },
+                                Duration::from_secs(60),
+                            )
+                            .expect("the verify answer");
+                        answered.push(lane);
+                    }
+                }
+                (RunStatus::Running, _) | (RunStatus::Waiting, Some(StopReason::Checkpoint)) => {}
+                (status, reason) => panic!(
+                    "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
+                    ledger(&run),
+                    host.stops.lock().unwrap(),
+                    host.screens()
+                ),
+            }
+            assert!(Instant::now() < deadline, "the run never completed\nledger:\n{}\n{}", ledger(&run), host.screens());
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        // A first, then B: each lane was verified, once.
+        assert_eq!(answered, ["pr1", "pr2"], "{all}");
+        let records: Vec<(Option<&str>, &str)> = run.verifications.iter().map(|v| (v.lane.as_deref(), v.result.as_str())).collect();
+        assert_eq!(records, [(Some("pr1"), "verified"), (Some("pr2"), "verified")], "{all}");
+        let events = &run.events;
+        let held = events
+            .iter()
+            .position(|e| e.summary.contains("finished while the run waits on your verification"))
+            .expect("B was held");
+        let a_verified = events.iter().position(|e| e.kind == "verify" && e.lane_id.as_deref() == Some("pr1")).unwrap();
+        let b_check = run
+            .events
+            .iter()
+            .rposition(|e| e.kind == "gate" && e.lane_id.as_deref() == Some("pr2") && e.outcome.as_deref() == Some("passed"))
+            .expect("B's check ran");
+        let b_verified = events.iter().position(|e| e.kind == "verify" && e.lane_id.as_deref() == Some("pr2")).unwrap();
+        let b_review = events
+            .iter()
+            .position(|e| e.outcome.as_deref() == Some("advance") && e.lane_id.as_deref() == Some("pr2"))
+            .expect("B moved on");
+        assert!(held < a_verified, "B finished during A's wait\n{all}");
+        assert!(a_verified < b_check && b_check < b_verified && b_verified < b_review, "{all}");
+        assert!(run.events.iter().all(|e| !(e.lane_id.as_deref() == Some("pr2") && e.outcome.as_deref() == Some("skip"))), "{all}");
+        // Each lane's PR Reviewer opened in its own worktree.
+        let reviewers = host.launches.lock().unwrap().iter().filter(|l| l.role_id == "role_pr_reviewer").count();
+        assert_eq!(reviewers, 2, "{all}");
+        assert_eq!(run.status, RunStatus::Complete);
+    }
 }
