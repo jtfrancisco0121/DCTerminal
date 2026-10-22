@@ -219,6 +219,19 @@ pub struct Ticket {
     /// RFC 3339, UTC. "Changed since intake" compares it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_updated: Option<String>,
+    /// The ClickUp list the ticket is in (C3): write-back maps a "verified"
+    /// status per list. Missing on snapshots taken before C3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<TicketList>,
+}
+
+/// A ticket's list: its id, and its name to show (C3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketList {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 /// Where the tickets came from. The Claude account picked the token and the
@@ -543,6 +556,10 @@ fn ticket_of(task: &Task, comments: &[Comment], limits: &Limits) -> Ticket {
             .collect(),
         parent_id: task.parent.clone(),
         date_updated: task.date_updated.as_deref().and_then(ms_to_rfc3339),
+        list: valid_id(&task.list.id).then(|| TicketList {
+            id: task.list.id.clone(),
+            name: task.list.name.trim().to_string(),
+        }),
     }
 }
 
@@ -1040,6 +1057,15 @@ mod tests {
         // It reads back as written.
         let back: TicketsSnapshot = serde_json::from_str(&text).unwrap();
         assert_eq!(back, snap);
+        // C3: each ticket names its list.
+        assert_eq!(first["list"], serde_json::json!({ "id": "901800112233", "name": "QA 1.2.8" }));
+        // A snapshot written before C3 has no list and still reads.
+        let mut old = json.clone();
+        for ticket in old["tickets"].as_array_mut().unwrap() {
+            ticket.as_object_mut().unwrap().remove("list");
+        }
+        let old: TicketsSnapshot = serde_json::from_value(old).unwrap();
+        assert!(old.tickets.iter().all(|t| t.list.is_none()));
     }
 
     #[test]
@@ -1201,6 +1227,11 @@ mod tests {
         assert!(snap.tickets[0].description.contains("## Steps"), "{}", snap.tickets[0].description);
         assert_eq!(snap.tickets[0].tags, ["desktop", "windows"]);
         assert_eq!(snap.tickets[0].parent_id.as_deref(), Some("7xk2epic01"));
+        // C3: the ticket's list, for write-back's status mapping.
+        assert_eq!(
+            snap.tickets[0].list,
+            Some(TicketList { id: "901800112233".into(), name: "QA 1.2.8".into() })
+        );
         assert_eq!(snap.tickets[1].row.title, "Duplicate lines in the engine log");
         // The ticket call went through the client (and so the Gate) next to the comment call.
         let paths = api.paths();

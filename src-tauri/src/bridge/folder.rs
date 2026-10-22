@@ -1,7 +1,8 @@
 //! The run folder (`<app data>/runs/<runId>/`) and the files in it. The app
 //! writes `run.json`, `repos.json` (L1), `stages/<key>/stage.json` and
 //! `stages/<key>/mode` when it launches a stage, and `tickets.json` when a run
-//! starts from ClickUp tickets (C2), and the run actor writes each review round it sends
+//! starts from ClickUp tickets (C2) and `writeback.json` for its ClickUp
+//! updates (C3), and the run actor writes each review round it sends
 //! back as `findings-<stage>-r<N>.json` (V4); the bridge writes the rest,
 //! including the run-level hand-off files: the Planner's `plan.md` and
 //! `tasks.json`, and each Implementer's `prs.json` (`prs-<lane>.json` in a lane); the app keeps
@@ -38,6 +39,9 @@ pub const TASKS_FILE: &str = "tasks.json";
 /// The ClickUp intake snapshot (C2). The app writes it before the first
 /// stage starts and on Pull again; nothing else does.
 pub const TICKETS_FILE: &str = "tickets.json";
+/// ClickUp write-back (C3): the proposals, your ticks and edits, and what
+/// was sent. Only the app writes it.
+pub const WRITEBACK_FILE: &str = "writeback.json";
 /// The repos of Settings › Repos when a stage launched (L1). The bridge is a
 /// process of its own that sees only the run folder, so the app writes the
 /// names here for the Planner's tasks check; the bridge never writes it.

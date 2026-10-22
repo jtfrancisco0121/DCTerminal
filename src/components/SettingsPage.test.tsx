@@ -27,6 +27,7 @@ vi.mock("../bridge", () => ({
   pipelineDefsList: vi.fn(async () => []),
   pipelineDefsSave: vi.fn(async (defs: unknown[]) => defs),
   clickupStatus: vi.fn(async () => []),
+  clickupStatusMaps: vi.fn(async () => []),
 }));
 
 import { SettingsPage } from "./SettingsPage";

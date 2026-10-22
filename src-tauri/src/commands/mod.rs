@@ -7,6 +7,7 @@ pub(crate) mod chain_events;
 pub(crate) mod changes;
 mod clickup;
 pub(crate) mod clickup_intake;
+pub(crate) mod clickup_writeback;
 mod cursor_cli;
 mod dev_session;
 mod forms;
@@ -56,6 +57,10 @@ pub use clickup::{clickup_status, clickup_test, clickup_token_clear, clickup_tok
 pub use clickup_intake::{
     clickup_intake_check, clickup_intake_preview, clickup_intake_pull, clickup_intake_snapshot,
     clickup_intake_status, IntakeState,
+};
+pub use clickup_writeback::{
+    clickup_list_statuses, clickup_status_map_set, clickup_status_maps, clickup_writeback_edit,
+    clickup_writeback_load, clickup_writeback_send, WritebackState,
 };
 pub use forms::{get_form_recall, save_form_draft};
 pub use github::{

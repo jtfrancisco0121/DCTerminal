@@ -1354,6 +1354,115 @@ export function clickupIntakePull(runId: string, ticketIds: string[]): Promise<C
   return invoke("clickup_intake_pull", { runId, ticketIds });
 }
 
+/** C3: the ClickUp list a ticket is in. */
+export type ClickUpTicketList = { id: string; name: string };
+
+/** C3: what was sent for a write-back row, and when. */
+/** What ClickUp has from the row: the last comment posted (none when only a status went) and the last status set. */
+export type ClickUpSent = { at: string; comment?: string; status?: string };
+
+/** C3: one ticket's proposed ClickUp update. Never sent without `ticked`. */
+export type ClickUpProposal = {
+  ticket: { id: string; customId?: string; title: string; url: string; list?: ClickUpTicketList };
+  /** The lanes it was matched to (`pr1`); empty: the run's own stages. */
+  lanes?: string[];
+  comment: string;
+  /** The status to move the ticket to; absent: no status change. */
+  status?: string;
+  /** Why no status change is proposed. */
+  statusNote?: string;
+  verified: boolean;
+  ticked: boolean;
+  edited: boolean;
+  statusEdited?: boolean;
+  skipped?: boolean;
+  /** A follow-up to an update already sent: a later verification added to it. */
+  followUp?: boolean;
+  sent?: ClickUpSent;
+  /** The last comment POST timed out, so ClickUp may have it; ticking again needs `confirmResend`. */
+  sentMaybe?: boolean;
+  /** The last send's plain-English error. */
+  error?: string;
+};
+
+/** C3: one list's "verified" status mapping. */
+export type ClickUpListMapping = { id: string; name: string; verified?: string };
+
+/** C3: the chain overview's "ClickUp updates". */
+export type ClickUpWritebackView = {
+  runId: string;
+  /** The Claude account the tickets were taken with; sends use it. */
+  accountId: string;
+  accountName: string;
+  proposals: ClickUpProposal[];
+  lists: ClickUpListMapping[];
+  sending?: boolean;
+};
+
+/** C3: one change to a row. `setStatus` with no `status` means no status change. */
+export type ClickUpRowEdit = {
+  comment?: string;
+  setStatus?: boolean;
+  status?: string | null;
+  ticked?: boolean;
+  skipped?: boolean;
+  /** You checked the ticket after a timed-out send and want it sent again. */
+  confirmResend?: boolean;
+};
+
+/** C3: one row you ticked, as you saw it. The backend sends it only if writeback.json still says exactly this. */
+export type ClickUpSendRow = { ticketId: string; comment: string; status: string | null };
+
+export type ClickUpWritebackSent = {
+  view: ClickUpWritebackView;
+  sent: number;
+  failed: number;
+  /** Ticked rows that were not sent, and why (no call was made). */
+  notSent: { ticketId: string; reason: string }[];
+};
+
+export type ClickUpListStatus = { status: string; kind: string; color?: string };
+export type ClickUpListStatuses = { id: string; name: string; statuses: ClickUpListStatus[] };
+export type ClickUpAccountMappings = { accountId: string; accountName: string; lists: ClickUpListMapping[] };
+
+/** C3: the run's ClickUp updates; null when it has none (no tickets.json, or nothing verified or complete yet). */
+export function clickupWritebackLoad(runId: string): Promise<ClickUpWritebackView | null> {
+  return invoke("clickup_writeback_load", { runId });
+}
+
+/** C3: ticks, skips or edits one row. */
+export function clickupWritebackEdit(
+  runId: string,
+  ticketId: string,
+  edit: ClickUpRowEdit,
+): Promise<ClickUpWritebackView> {
+  return invoke("clickup_writeback_edit", { runId, ticketId, edit });
+}
+
+/** C3 Send ticked: posts only `rows`, each as you saw it, with the account the tickets were taken with. */
+export async function clickupWritebackSend(runId: string, rows: ClickUpSendRow[]): Promise<ClickUpWritebackSent> {
+  return invoke("clickup_writeback_send", { windowId: await windowId(), runId, rows });
+}
+
+/** C3: a ClickUp list's real statuses, read with that account's token. */
+export function clickupListStatuses(accountId: string, listId: string): Promise<ClickUpListStatuses> {
+  return invoke("clickup_list_statuses", { accountId, listId });
+}
+
+/** C3: maps a list's "verified" status (checked against its real statuses), or with null forgets it. */
+export function clickupStatusMapSet(
+  accountId: string,
+  listId: string,
+  verified: string | null,
+): Promise<ClickUpListMapping[]> {
+  return invoke("clickup_status_map_set", { accountId, listId, verified });
+}
+
+/** C3: every Claude account's list mappings. */
+export function clickupStatusMaps(): Promise<ClickUpAccountMappings[]> {
+  return invoke("clickup_status_maps");
+}
+
 /** Opens the window's GitHub tab, or focuses it when one is already open. */
 export async function openGithubTab(): Promise<AppStateSnapshot> {
   return invoke("open_github_tab", { windowId: await windowId() });

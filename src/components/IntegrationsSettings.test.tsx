@@ -8,9 +8,20 @@ vi.mock("../bridge", () => ({
   clickupTokenSet: vi.fn(),
   clickupTokenClear: vi.fn(),
   clickupTest: vi.fn(),
+  clickupStatusMaps: vi.fn(async () => []),
+  clickupStatusMapSet: vi.fn(),
+  clickupListStatuses: vi.fn(),
 }));
 
-import { clickupStatus, clickupTest, clickupTokenClear, clickupTokenSet } from "../bridge";
+import {
+  clickupListStatuses,
+  clickupStatus,
+  clickupStatusMaps,
+  clickupStatusMapSet,
+  clickupTest,
+  clickupTokenClear,
+  clickupTokenSet,
+} from "../bridge";
 import { IntegrationsSettings } from "./IntegrationsSettings";
 
 const work: ClickUpAccountStatus = {
@@ -37,6 +48,7 @@ function row(name: string) {
 describe("Settings › Integrations › ClickUp", () => {
   beforeEach(() => {
     vi.mocked(clickupStatus).mockResolvedValue([work, personal]);
+    vi.mocked(clickupStatusMaps).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -149,5 +161,37 @@ describe("Settings › Integrations › ClickUp", () => {
     expect(within(row("Personal")).queryByText(/is not a valid token/)).toBeNull();
     // The keychain field stays usable.
     expect(screen.getByLabelText("ClickUp token for Work")).toHaveProperty("disabled", false);
+  });
+
+  it("lists each account's mapped verified statuses and changes or removes one (C3)", async () => {
+    vi.mocked(clickupStatusMaps).mockResolvedValue([
+      { accountId: "default", accountName: "Work", lists: [{ id: "901800112233", name: "QA 1.2.8", verified: "QA PASSED" }] },
+      { accountId: "personal", accountName: "Personal", lists: [] },
+    ]);
+    vi.mocked(clickupListStatuses).mockResolvedValue({
+      id: "901800112233",
+      name: "QA 1.2.8",
+      statuses: [
+        { status: "to do", kind: "open" },
+        { status: "QA PASSED", kind: "custom" },
+        { status: "complete", kind: "closed" },
+      ],
+    });
+    vi.mocked(clickupStatusMapSet).mockResolvedValueOnce([
+      { id: "901800112233", name: "QA 1.2.8", verified: "complete" },
+    ]);
+    vi.mocked(clickupStatusMapSet).mockResolvedValueOnce([]);
+    render(<IntegrationsSettings />);
+    const item = await screen.findByRole("listitem", { name: "Verified status for QA 1.2.8" });
+    expect(item.textContent).toContain("QA 1.2.8 → QA PASSED");
+    fireEvent.click(within(item).getByRole("button", { name: "Change" }));
+    const select = await within(item).findByLabelText("New verified status for QA 1.2.8");
+    expect(clickupListStatuses).toHaveBeenCalledWith("default", "901800112233");
+    fireEvent.change(select, { target: { value: "complete" } });
+    await waitFor(() => expect(clickupStatusMapSet).toHaveBeenCalledWith("default", "901800112233", "complete"));
+    await waitFor(() => expect(item.textContent).toContain("QA 1.2.8 → complete"));
+    fireEvent.click(within(item).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(clickupStatusMapSet).toHaveBeenLastCalledWith("default", "901800112233", null));
+    expect(await screen.findByText("No lists mapped yet.")).toBeTruthy();
   });
 });
