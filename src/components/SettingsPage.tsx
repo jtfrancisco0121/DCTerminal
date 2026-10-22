@@ -29,6 +29,7 @@ import { errorText } from "./InlineNotice";
 import { RoleEditor } from "./RoleEditor";
 import { PipelinesSettings } from "./PipelinesSettings";
 import { ReposSettings } from "./ReposSettings";
+import { IntegrationsSettings } from "./IntegrationsSettings";
 import { useConfirm } from "./confirm";
 
 type Props = {
@@ -73,6 +74,7 @@ export const SETTINGS_CATEGORIES = [
   "Pipelines",
   "Repos",
   "Providers",
+  "Integrations",
   "Models",
   "Appearance",
   "Terminal",
@@ -246,6 +248,7 @@ export function SettingsPage({
                 <p className="hint">Unavailable until the app shell is running.</p>
               </section>
             ))}
+          {category === "Integrations" && <IntegrationsSettings />}
           {category === "Models" && (
             <section className="settings-section" aria-label="Models">
               <h3>Models</h3>

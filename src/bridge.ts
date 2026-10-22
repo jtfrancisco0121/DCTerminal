@@ -1108,6 +1108,49 @@ export function githubSaveFilters(filters: GithubFilters): Promise<GithubFilters
   return invoke("github_save_filters", { filters });
 }
 
+/** Where an account's ClickUp token comes from. `env` is `DCT_CLICKUP_TOKEN`. */
+export type ClickUpTokenSource = "keychain" | "env" | "none";
+
+/** One Claude account's ClickUp setup. The token itself is never sent to the UI. */
+export type ClickUpAccountStatus = {
+  accountId: string;
+  accountName: string;
+  configured: boolean;
+  source: ClickUpTokenSource;
+  workspaceId?: string;
+  workspaceName?: string;
+};
+
+export type ClickUpWorkspaceOption = { id: string; name: string };
+
+export type ClickUpTestResult = {
+  status: ClickUpAccountStatus;
+  workspaces: ClickUpWorkspaceOption[];
+};
+
+/** Every Claude account's ClickUp setup, in account order. */
+export function clickupStatus(): Promise<ClickUpAccountStatus[]> {
+  return invoke("clickup_status");
+}
+
+/** Saves an account's ClickUp token in the system keychain. It cannot be read back. */
+export function clickupTokenSet(accountId: string, token: string): Promise<ClickUpAccountStatus> {
+  return invoke("clickup_token_set", { accountId, token });
+}
+
+/** Removes an account's ClickUp token from the keychain, and its workspace. */
+export function clickupTokenClear(accountId: string): Promise<ClickUpAccountStatus> {
+  return invoke("clickup_token_clear", { accountId });
+}
+
+/**
+ * Checks an account's token against ClickUp and saves its workspace:
+ * `workspaceId` when given, else the saved one, else the first.
+ */
+export function clickupTest(accountId: string, workspaceId?: string): Promise<ClickUpTestResult> {
+  return invoke("clickup_test", { accountId, workspaceId: workspaceId ?? null });
+}
+
 /** Opens the window's GitHub tab, or focuses it when one is already open. */
 export async function openGithubTab(): Promise<AppStateSnapshot> {
   return invoke("open_github_tab", { windowId: await windowId() });

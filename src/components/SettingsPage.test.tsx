@@ -26,6 +26,7 @@ vi.mock("../bridge", () => ({
   storageCleanup: vi.fn(async () => ({ bytesFreed: 0, bytes: 2048 })),
   pipelineDefsList: vi.fn(async () => []),
   pipelineDefsSave: vi.fn(async (defs: unknown[]) => defs),
+  clickupStatus: vi.fn(async () => []),
 }));
 
 import { SettingsPage } from "./SettingsPage";
@@ -144,6 +145,7 @@ describe("SettingsPage categories (U6)", () => {
       "Pipelines",
       "Repos",
       "Providers",
+      "Integrations",
       "Models",
       "Appearance",
       "Terminal",

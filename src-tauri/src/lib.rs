@@ -5,6 +5,7 @@ mod claude_history;
 mod claude_session_log;
 mod cli_detect;
 mod cli_launch;
+pub mod clickup;
 mod commands;
 mod crash_log;
 mod cursor_history;
@@ -102,6 +103,7 @@ use commands::{
     activity_clear, activity_list, terminal_chat_entries, terminal_chat_unwatch,
     terminal_chat_watch, terminal_session_log,
 };
+use commands::{clickup_status, clickup_test, clickup_token_clear, clickup_token_set};
 use commands::{
     github_claim_notifications, github_feed, github_push_commits, github_save_filters,
     github_status,
@@ -158,15 +160,17 @@ fn isolate_webview_data_dir() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Before anything else: all three change process env, which is only
+    // Before anything else: all four change process env, which is only
     // sound while the main thread is the only thread. The scrub drops a
     // parent Claude Code session's variables, so Claude tabs (and a `claude`
     // typed in a shell tab) don't take themselves for nested sessions and
     // skip their session log. The per-command `CLAUDE_CONFIG_DIR` and
     // `CLAUDE_CODE_EXECUTABLE` are applied later and are untouched. A cached
     // login PATH is refreshed from `setup`, never from a thread started here.
+    // `DCT_CLICKUP_TOKEN` is moved out of the env so no child inherits it.
     shell_env::apply_login_path();
     shell_env::scrub_parent_claude_session();
+    clickup::secret::take_env_token();
     isolate_webview_data_dir();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -287,6 +291,10 @@ pub fn run() {
             github_push_commits,
             github_claim_notifications,
             github_save_filters,
+            clickup_status,
+            clickup_token_set,
+            clickup_token_clear,
+            clickup_test,
             set_preview_url,
             get_pipeline_run,
             pipeline_defs_list,
