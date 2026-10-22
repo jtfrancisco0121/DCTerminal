@@ -297,6 +297,18 @@ fn advance(
             done.unblocked = unblocked;
             return go(run, done, detail);
         }
+        if def.approve_at_end {
+            // R1: a round completes only once you approve its scope and waves.
+            let reason = format!(
+                "{why}. Approve it yourself: check the round's plans, waves and merge order in the chain overview, then press Approve round (or send it back)."
+            );
+            let stage = &def.stages[index];
+            run.stop_for_in_lane(StopReason::Checkpoint, Some(&stage.id), Some(&stage.role_id), lane, reason.clone(), detail);
+            let mut decision = Decision::new("stop", reason).for_stage(stage);
+            decision.stop_reason = Some(StopReason::Checkpoint);
+            decision.follow_ups = follow_ups;
+            return decision;
+        }
         let mut done = Decision::new("complete", format!("{why}: the run is complete."));
         done.follow_ups = follow_ups;
         return go(run, done, detail);

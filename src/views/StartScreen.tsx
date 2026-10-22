@@ -409,7 +409,7 @@ export function StartScreen({
     showFields &&
     activeTabSummary?.phase === "draft" &&
     !activeTabSummary.chain &&
-    (roleId === "role_planner" || roleId === "role_implementer") ? (
+    (roleId === "role_planner" || roleId === "role_implementer" || roleId === "role_triage") ? (
       <label className="eagle-toggle">
         <input
           type="checkbox"
@@ -419,7 +419,7 @@ export function StartScreen({
             setEagleOn(event.target.checked);
           }}
         />
-        {roleId === "role_planner" ? "Eagle-Eye 1" : "Eagle-Eye 2"}
+        {roleId === "role_planner" ? "Eagle-Eye 1" : roleId === "role_triage" ? "QA round" : "Eagle-Eye 2"}
       </label>
     ) : null;
 

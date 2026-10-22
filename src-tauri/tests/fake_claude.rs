@@ -3362,4 +3362,218 @@ mod run_actor {
         assert_eq!(run.status, RunStatus::Complete);
         assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
     }
+
+    // ---- R1: a QA round's Triage ------------------------------------------
+
+    const TRIAGE_SID: &str = "8c3f5d21-2b3c-4d4e-9f50-000000000031";
+
+    /// A round of three invented tickets' plans: backend first, then a plan
+    /// across backend and web, and one deferred plan; one ticket excluded.
+    /// `backend` is the backend merge order.
+    fn round_block(backend: &[&str]) -> Value {
+        json!({ "round": {
+            "plans": [
+                { "id": "plan1", "title": "Session expiry", "tickets": ["QA-301"], "repos": ["backend"],
+                  "status": "active", "wave": 1, "summary": "Expire idle sessions in the backend." },
+                { "id": "plan2", "title": "Expiry banner", "tickets": ["QA-302", "QA-303"], "repos": ["backend", "web"],
+                  "status": "active", "wave": 2, "summary": "Add the expiry field, then show it on the web." },
+                { "id": "plan3", "title": "CDN cache", "tickets": ["QA-304"], "repos": ["cdn"], "status": "deferred",
+                  "reason": "The fix is in the CDN configuration, not our repos.", "summary": "Hand to the platform team." }
+            ],
+            "waves": [{ "n": 1, "why": "Isolated backend fix" }, { "n": 2, "why": "Needs plan1's endpoint" }],
+            "mergeOrder": { "backend": backend, "web": ["plan2"] },
+            "excluded": [{ "ticket": "QA-305", "reason": "Already fixed on staging." }]
+        } })
+    }
+
+    fn round_doc(version: &str, block: &Value) -> String {
+        format!(
+            "# QA round: sessions ({version})\n\n## 1. Summary\n5 tickets, 3 plans (2 active, 1 deferred), 2 waves; QA-305 excluded.\n\n\
+             ## 3. Priority and merge order\nbackend: plan1 → plan2.\n\n```json\n{block}\n```\n"
+        )
+    }
+
+    fn tickets_json() -> Value {
+        let ticket = |id: &str, title: &str| {
+            json!({ "id": id, "title": title, "priority": "normal", "status": "open", "url": format!("https://app.clickup.com/t/{id}"),
+                    "description": format!("{title}."), "comments": [], "tags": [] })
+        };
+        json!({
+            "schema": 1,
+            "source": { "kind": "clickup", "accountId": "acct-test", "workspaceId": "ws-test", "refs": [], "filters": {} },
+            "fetchedAt": "2026-10-22T00:00:00.000Z",
+            "limits": { "maxTickets": 100 },
+            "tickets": [
+                ticket("QA-301", "Idle sessions never expire"),
+                ticket("QA-302", "No expiry field in the session API"),
+                ticket("QA-303", "The web shows no expiry banner"),
+                ticket("QA-304", "CDN serves a stale login page"),
+                ticket("QA-305", "Logout button misaligned"),
+            ],
+            "excluded": []
+        })
+    }
+
+    /// R1, end to end on the actor: the QA round's Triage reads `tickets.json`
+    /// and `repos.json` and hands over a round through ExitPlanMode. A round
+    /// whose merge order contradicts its waves is refused with the reason; the
+    /// fixed one is written as `round.md` and `round.json`, and the Plan
+    /// Reviewer opens on it. Its round goes back to Triage (resumed in its own
+    /// session), the second review approves, and the run waits for you at the
+    /// checkpoint; your Approve completes it. No Implementer ever starts.
+    #[test]
+    fn a_qa_round_is_triaged_reviewed_and_waits_for_your_approval() {
+        let data = TempDir::new("actor_round_data");
+        let home = FakeHome::new("actor_round");
+        let repo_entry = |name: &str| RepoEntry {
+            name: name.into(),
+            folder: home.cwd.join(name).display().to_string(),
+            ..RepoEntry::default()
+        };
+        let repos = vec![repo_entry("backend"), repo_entry("web")];
+        let broken = round_doc("v1", &round_block(&["plan2", "plan1"]));
+        let good = round_doc("v1", &round_block(&["plan1", "plan2"]));
+        let revised = round_doc("v2", &round_block(&["plan1", "plan2"]));
+        let scenarios = HashMap::from([
+            (
+                "role_triage".to_string(),
+                VecDeque::from([json!({ "turns": [{ "steps": [
+                    { "tool": "ExitPlanMode", "input": { "plan": revised }, "permission": true },
+                    { "reply": "The round is revised." }
+                ] }] })]),
+            ),
+            (
+                "role_plan_reviewer".to_string(),
+                VecDeque::from([
+                    reviewed("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "QA-303's claim was not checked against the web code." }])),
+                    reviewed("APPROVED", json!([])),
+                ]),
+            ),
+        ]);
+        let host = host_with(data, home, repos, scenarios);
+        let actors = RunActors::new(host.clone());
+
+        // You start Triage from the form: a new engine-2 QA round run.
+        let cwd = host.home.cwd.path().display().to_string();
+        let triage = {
+            let mut store = host.store.lock().unwrap();
+            let role = host.roles.iter().find(|r| r.id == "role_triage").expect("the Triage role is built in");
+            let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers =
+                HashMap::from([("cwd".to_string(), cwd.clone()), ("title".to_string(), "QA 9.9 round".to_string())]);
+            let chain = ChainRef { chain_id: RUN.into(), kind: "round".into(), step: 1, total: 2, round: 1, lane: None };
+            store.set_tab_chain(&tab, Some(chain), None).unwrap();
+            let run = store.pipeline_run_by_id_mut(RUN).expect("the run");
+            assert_eq!(run.engine, 2, "a QA round runs on engine 2");
+            run.set_autopilot_enabled(true);
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "triage".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, TRIAGE_SID).unwrap();
+            store.save().unwrap();
+            tab
+        };
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "triage".into(),
+            role_id: "role_triage".into(),
+            lane: None,
+            stage_key: "triage".into(),
+            kind: ResultKind::Round,
+            autopilot: true,
+        };
+        let run_dir = prepare_stage(&host.runs, &bridge, &triage).expect("prepare Triage");
+        write_run_repos(&run_dir, &host.repos).expect("repos.json");
+        std::fs::write(run_dir.join("tickets.json"), serde_json::to_vec_pretty(&tickets_json()).unwrap()).expect("tickets.json");
+        let flags = launch_flags(ResultKind::Round, Path::new(DCTERMINAL), &run_dir, RUN, "triage", &triage);
+        assert!(flags.args.is_empty(), "Triage reports through ExitPlanMode: no MCP server");
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: triage.clone(),
+                role_id: "role_triage".into(),
+                cwd: host.home.cwd.path().to_path_buf(),
+                prompt: "Triage the QA round.".into(),
+                session_id: TRIAGE_SID.into(),
+                bridge: Some(flags),
+            },
+            &json!({ "turns": [{ "steps": [
+                { "tool": "ExitPlanMode", "input": { "plan": broken }, "permission": true },
+                { "tool": "ExitPlanMode", "input": { "plan": good }, "permission": true },
+                { "reply": "The round is written." }
+            ] }] }),
+            false,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            match (run.status, run.stop_reason) {
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) => break,
+                (RunStatus::Running, _) => {}
+                (status, reason) => panic!(
+                    "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
+                    ledger(&run),
+                    host.stops.lock().unwrap(),
+                    host.screens()
+                ),
+            }
+            assert!(Instant::now() < deadline, "the round never waited for you\nledger:\n{}\n{}", ledger(&run), host.screens());
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        // The round with a contradicting merge order was refused with the
+        // reason; the fixed one was taken.
+        let log = find_session_log(host.home.config.path(), TRIAGE_SID).expect("Triage's session log");
+        let results: Vec<Value> = log_records(&log, false)
+            .into_iter()
+            .filter(|r| r["message"]["content"][0]["type"] == "tool_result")
+            .map(|r| r["message"]["content"][0].clone())
+            .collect();
+        assert!(results.len() >= 2, "{results:?}");
+        let refused = results[0]["content"].as_str().unwrap_or_default();
+        assert!(refused.contains("in backend, plan2 (wave 2) merges before plan1 (wave 1)"), "{refused}");
+        assert!(results[1]["content"].as_str().unwrap_or_default().starts_with("Plan received by DCTerminal"));
+        // round.md and round.json: the revised round, checked.
+        let round: Value = serde_json::from_slice(&std::fs::read(run_dir.join("round.json")).expect("round.json")).unwrap();
+        assert_eq!(round["plans"].as_array().map(Vec::len), Some(3));
+        assert_eq!(round["plans"][2]["status"], "deferred");
+        assert_eq!(round["mergeOrder"]["backend"], json!(["plan1", "plan2"]));
+        assert_eq!(round["runId"], RUN);
+        let markdown = std::fs::read_to_string(run_dir.join("round.md")).expect("round.md");
+        assert!(markdown.contains("QA round: sessions (v2)"), "{markdown}");
+        assert!(!run_dir.join("tasks.json").exists(), "a round writes no tasks");
+
+        // The Plan Reviewer read the round; its round went back to Triage's own session.
+        let launches = host.launches.lock().unwrap().clone();
+        let roles: Vec<&str> = launches.iter().map(|l| l.role_id.as_str()).collect();
+        assert_eq!(roles, ["role_plan_reviewer", "role_plan_reviewer"], "{all}");
+        let first_review = &launches[0].prompt;
+        assert!(first_review.contains("QA round: sessions (v1)"), "{first_review}");
+        assert!(first_review.contains("This plan is a QA round from Triage"), "{first_review}");
+        assert!(first_review.contains(&run_dir.join("round.md").display().to_string()), "{first_review}");
+        assert!(first_review.contains(&run_dir.join("round.json").display().to_string()), "{first_review}");
+        assert!(launches[1].prompt.contains("QA round: sessions (v2)"), "{}", launches[1].prompt);
+        let resumed: Vec<(String, String)> =
+            host.resumes.lock().unwrap().iter().map(|r| (r.role_id.clone(), r.session_id.clone())).collect();
+        assert_eq!(resumed, [("role_triage".to_string(), TRIAGE_SID.to_string())], "{all}");
+        let triage_prompts = prompts(&host, TRIAGE_SID);
+        assert!(triage_prompts[1].contains("QA-303's claim was not checked"), "{:?}", triage_prompts);
+
+        // Approved by the reviewer, the run waits for your approval of the scope and waves.
+        let waiting = run.autopilot.as_ref().and_then(|a| a.waiting.clone()).unwrap_or_default();
+        assert!(waiting.contains("Approve round"), "{waiting}");
+        assert_ne!(run.status, RunStatus::Complete);
+        let outcome = actors.ask(RUN, UserAction::Approve { lane: None }, Duration::from_secs(30)).expect("your Approve");
+        assert!(outcome.complete, "{outcome:?}");
+        let run = snapshot(&host);
+        assert_eq!(run.status, RunStatus::Complete, "{}", ledger(&run));
+        assert!(!run.tab_ids.contains_key("role_implementer"));
+    }
 }

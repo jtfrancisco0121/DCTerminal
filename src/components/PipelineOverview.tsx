@@ -53,6 +53,7 @@ import {
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
 import { TicketsSinceIntake } from "./TicketsSinceIntake";
 import { ClickUpUpdates } from "./ClickUpUpdates";
+import { RoundSummary } from "./RoundSummary";
 import { haikuDefaultModeNote } from "../pipeline/haikuMode";
 import { parseReviewVerdict, verdictTone } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
@@ -535,10 +536,14 @@ export function PipelineOverview({
                 type="button"
                 className="secondary-button"
                 disabled={busy}
-                title="Approve the run yourself, for example when its last reviewer approved it but listed findings."
+                title={
+                  def.approveAtEnd
+                    ? "Approve the round's scope and wave order. The run is then complete."
+                    : "Approve the run yourself, for example when its last reviewer approved it but listed findings."
+                }
                 onClick={() => void approveRunNow()}
               >
-                Mark complete
+                {def.approveAtEnd ? "Approve round" : "Mark complete"}
               </button>
             </div>
           )}
@@ -561,6 +566,7 @@ export function PipelineOverview({
           refreshKey={`${run.status ?? ""}|${run.verifications?.length ?? 0}|${run.updatedAt ?? ""}`}
         />
       )}
+      {(run.engine ?? 1) >= 2 && <RoundSummary runId={run.id} refreshKey={run.updatedAt ?? ""} />}
 
       <div className="pipeline-lanes">
         {stages.map((stage) => {

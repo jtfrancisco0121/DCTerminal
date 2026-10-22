@@ -19,6 +19,7 @@
 //! ```text
 //! run.json                      the run id (app)
 //! plan.md, tasks.json           the Planner's plan and tasks (ExitPlanMode hook)
+//! round.md, round.json          a Triage stage's QA round instead (R1, `round`)
 //! prs.json, prs-<lane>.json     what each Implementer reported (submit_result)
 //! inbox/                        finished turns (Stop hook) and Needs you
 //!                               (PermissionRequest, Notification) for the app
@@ -43,6 +44,9 @@ pub mod gate;
 mod hook;
 pub mod launch;
 mod mcp;
+pub mod round;
+#[cfg(test)]
+mod round_tests;
 pub mod schema;
 pub mod watch;
 #[cfg(test)]

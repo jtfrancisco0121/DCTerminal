@@ -136,6 +136,8 @@ fn stage_plan(
 /// reviewers and a generic stage keep the v1 path.
 fn stage_kind(stage: &crate::pipelines::StageDef) -> Option<ResultKind> {
     match stage.kind() {
+        // R1: a Triage stage hands over a round instead of tasks.
+        StageKind::Planner if stage.round => Some(ResultKind::Round),
         StageKind::Planner => Some(ResultKind::Planner),
         StageKind::Implementer => Some(ResultKind::Implementer),
         StageKind::Reviewer => stage.also_reviewers.is_empty().then_some(ResultKind::Reviewer),
@@ -264,7 +266,7 @@ pub fn hook_settings(
 ) -> Value {
     let on = |event: &str| hook(program, run_dir, run_id, stage_key, tab_id, event);
     let pre_tool = match kind {
-        ResultKind::Planner => "ExitPlanMode",
+        ResultKind::Planner | ResultKind::Round => "ExitPlanMode",
         ResultKind::Reviewer | ResultKind::Implementer => FULL_TOOL_NAME,
     };
     json!({
@@ -311,7 +313,7 @@ pub fn launch_flags(
     tab_id: &str,
 ) -> BridgeFlags {
     BridgeFlags {
-        args: if kind == ResultKind::Planner {
+        args: if matches!(kind, ResultKind::Planner | ResultKind::Round) {
             Vec::new()
         } else {
             vec![

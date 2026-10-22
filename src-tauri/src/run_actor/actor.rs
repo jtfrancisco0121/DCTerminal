@@ -772,15 +772,24 @@ impl<H: Host> Actor<H> {
     fn sources(&self, placed: &Placed, target: &StageDef, turn: Option<&BridgeTurn>, findings: Option<String>) -> StageSources {
         let runs = self.host.runs_root();
         let run_dir = crate::bridge::folder::run_dir(&runs, &self.run_id);
-        let plan_file = run_dir
-            .as_ref()
-            .and_then(|dir| std::fs::read_to_string(dir.join(crate::bridge::folder::PLAN_FILE)).ok())
-            .filter(|text| !text.trim().is_empty());
+        let read_text = |name: &str| {
+            run_dir
+                .as_ref()
+                .and_then(|dir| std::fs::read_to_string(dir.join(name)).ok())
+                .filter(|text| !text.trim().is_empty())
+        };
+        // R1: a round run's plan is Triage's `round.md`.
+        let round_text = read_text(crate::bridge::round::ROUND_MD_FILE);
+        let plan_file = read_text(crate::bridge::folder::PLAN_FILE).or(round_text.clone());
         let prs = run_dir
             .as_ref()
             .and_then(|dir| read_json::<RunPrs>(&dir.join(crate::bridge::folder::prs_file_name(placed.lane.as_deref()))))
             .map(|prs| prs.result);
-        let lane_note = placed.lane.as_deref().and_then(|lane| lane_note(run_dir.as_deref(), lane));
+        let lane_note = placed
+            .lane
+            .as_deref()
+            .and_then(|lane| lane_note(run_dir.as_deref(), lane))
+            .or_else(|| round_text.as_ref().filter(|_| target.kind() == StageKind::Reviewer).map(|_| prompts::ROUND_REVIEW_NOTE.to_string()));
         let run_files = run_dir
             .as_ref()
             .map(|dir| {
@@ -789,6 +798,9 @@ impl<H: Host> Actor<H> {
                     ("Tasks", TASKS_FILE.to_string()),
                     ("Pull requests", crate::bridge::folder::prs_file_name(placed.lane.as_deref())),
                     (prompts::TICKETS_LABEL, crate::bridge::folder::TICKETS_FILE.to_string()),
+                    // R1: Triage's round, for its Plan Reviewer.
+                    ("Round", crate::bridge::round::ROUND_MD_FILE.to_string()),
+                    ("Round plans", crate::bridge::round::ROUND_FILE.to_string()),
                 ]
                 .into_iter()
                 .map(|(what, name)| (what.to_string(), dir.join(name)))

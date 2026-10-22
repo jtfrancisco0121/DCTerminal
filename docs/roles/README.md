@@ -14,6 +14,7 @@ Markdown files here are the **authoritative** persona prompts. DCTerminal conver
 | `role-general.md` | `role_general` |
 | `role-recommendation.md` | `role_recommendation` |
 | `role-codebase-audit.md` | `role_codebase_audit` |
+| `role-triage.md` | `role_triage` (R1: a QA round's Triage stage) |
 
 ## After editing a template
 

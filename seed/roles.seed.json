@@ -255,6 +255,43 @@
       "color": "#F85149",
       "isBuiltIn": true,
       "fields": []
+    },
+    {
+      "id": "role_triage",
+      "name": "Triage",
+      "templateText": "# QA Round Triage: Confirm → Group → Order\n\nYou are acting as a senior engineer triaging a QA round before anyone writes a fix.\n\nI will give you a set of tickets: a ClickUp snapshot (`tickets.json`), tickets I dictated, or my own round plan pasted in. Do NOT fix anything. Your job is to confirm each ticket against the code, group the tickets into fix plans, order the plans into merge waves, and write the round document I will approve.\n\n---\n\n## ROUND\n\n**Round:**\n{{title}}\n\n**Tickets or your plan:**\n{{request}}\n\n**Additional Context:**\n{{additionalContext}}\n\n---\n\n# STEP 1 — READ THE TICKETS\n\n* When this run has a `tickets.json` (its path is in the context above), read it whole: each ticket's id, title, priority, status, description, comments and tags. It is the source of truth for ticket ids.\n* When I dictated tickets instead, give each one a short id of your own (`T1`, `T2`, …) and use it everywhere.\n* When I pasted my own plan, keep its grouping and order unless the code proves it wrong. Your job is then to check it and write the round block for it.\n\n---\n\n# STEP 2 — CONFIRM EACH TICKET AGAINST THE CODE\n\nFor every ticket, look at the code it is about in the repos listed below (each has its own folder).\n\n* Say whether the claim is **confirmed**, **partly right** or **wrong**, and point at the files and lines.\n* Correct a claim that turns out wrong: the real cause, a second cause, or a fix that would not work as proposed.\n* Note a ticket that is already fixed, cannot be reproduced, or is a duplicate. Such a ticket goes in `excluded` with the reason.\n\nDo not guess. If you could not check a claim, say so.\n\n---\n\n# STEP 3 — GROUP TICKETS INTO PLANS\n\n* Group tickets that share a contract (one endpoint and its clients, one data field, one subsystem), not by repo. One plan can touch several repos; it ships one pull request per repo.\n* Put every ticket in exactly one plan, or in `excluded`. A ticket whose fix spans two plans goes in the plan that finishes it; mention the other part in the other plan's summary.\n* Mark a plan **deferred** when its fix is outside our repos, and **parked** when it waits on a product decision. Say why in its `reason`.\n\n---\n\n# STEP 4 — ORDER PLANS INTO WAVES\n\n* A wave is a set of plans that can be built and merged at the same time. Wave 1 goes first.\n* Plans that touch the same repos and files go in different waves, so their pull requests do not clash. A plan whose client change needs another plan's endpoint goes in a later wave.\n* Put the riskiest and most urgent isolated fixes first (data loss, billing), and sweeping changes (strings, locale files) last.\n* For each repo, write the merge order of the plans that touch it. It must follow the waves: a later wave's plan never merges before an earlier wave's.\n\n---\n\n# OUTPUT FORMAT (the round document)\n\n## 1. Summary\n\nHow many tickets, how many plans (active, deferred, parked), how many waves, and the tickets excluded with the reason.\n\n## 2. Plan overview\n\nA table: plan, title, tickets, repos, wave, status.\n\n## 3. Priority and merge order\n\nWhy the waves are in this order, then a table: repo, merge order, why this order. Add the merge rules (for example: within a plan, the backend pull request merges before its clients; rebase on the latest base branch before each merge; never merge two pull requests to one repo at once).\n\n## 4. Plan detail\n\nFor each plan: its tickets, each with what you confirmed or corrected in the code (files and lines), the fix, and how it will be verified.\n\n## 5. Deferred and parked plans\n\nEach one with its reason and what would unblock it.\n\n## 6. Excluded tickets\n\nEach ticket left out, with the reason.\n\n## 7. Open questions\n\nProduct decisions or facts you need from me, or `None.`\n\n{{result_instructions}}\n\n**STOP HERE.**\n\nDo not fix anything. I approve the scope and the wave order before any plan starts.\n",
+      "templateVersion": 1,
+      "templateHash": "sha256:73407aeb9150ef0247d23338ccf72a5b2e6c16e83b9b337bc53f46d6c4888d4e",
+      "schemaTemplateHash": "sha256:73407aeb9150ef0247d23338ccf72a5b2e6c16e83b9b337bc53f46d6c4888d4e",
+      "defaultMode": "plan",
+      "injection": "send_on_start",
+      "color": "#39C5BB",
+      "isBuiltIn": true,
+      "fields": [
+        {
+          "key": "title",
+          "label": "Round",
+          "type": "text",
+          "required": true,
+          "placeholderToken": "[Round name]"
+        },
+        {
+          "key": "request",
+          "label": "Tickets or your plan",
+          "type": "multiline",
+          "required": false,
+          "placeholderToken": "[Paste or dictate the tickets, or paste your own round plan]",
+          "emptyBehavior": "literal:None provided"
+        },
+        {
+          "key": "additionalContext",
+          "label": "Additional Context",
+          "type": "multiline",
+          "required": false,
+          "placeholderToken": "[Release, deadlines, product decisions already made, repos to leave alone, etc.]",
+          "emptyBehavior": "literal:None provided"
+        }
+      ]
     }
   ]
 }

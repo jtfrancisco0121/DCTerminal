@@ -56,17 +56,17 @@ pub fn validate(kind: ResultKind, args: &Value) -> Result<Value, Vec<String>> {
         ResultKind::Reviewer => validate_reviewer(args),
         ResultKind::Implementer => validate_implementer(args),
         // The Planner reports through ExitPlanMode; its stage has no tool.
-        ResultKind::Planner => Err(vec![format!(
+        ResultKind::Planner | ResultKind::Round => Err(vec![format!(
             "the Planner hands its plan over through ExitPlanMode, not {TOOL_NAME}"
         )]),
     }
 }
 
-fn list(items: &[&str]) -> String {
+pub(super) fn list(items: &[&str]) -> String {
     items.join(", ")
 }
 
-fn unknown_fields(object: &Map<String, Value>, at: &str, allowed: &[&str], problems: &mut Vec<String>) {
+pub(super) fn unknown_fields(object: &Map<String, Value>, at: &str, allowed: &[&str], problems: &mut Vec<String>) {
     for key in object.keys().filter(|key| !allowed.contains(&key.as_str())) {
         problems.push(format!("`{at}{key}` is not a field (allowed: {})", list(allowed)));
     }
@@ -188,7 +188,7 @@ fn check_finding(index: usize, item: &Value, problems: &mut Vec<String>) -> Opti
 }
 
 /// A required string field: trimmed, not empty, at most `max` characters.
-fn required_text(object: &Map<String, Value>, at: &str, key: &str, max: usize, problems: &mut Vec<String>) -> Option<String> {
+pub(super) fn required_text(object: &Map<String, Value>, at: &str, key: &str, max: usize, problems: &mut Vec<String>) -> Option<String> {
     match object.get(key) {
         None | Some(Value::Null) => {
             problems.push(format!("`{at}{key}` is missing"));
@@ -443,7 +443,7 @@ pub fn check_story(result: &Value, mark: Option<&StoryMark>) -> Result<(), Vec<S
 
 /// The fenced code blocks of a markdown text: each block's info string
 /// (`json`) and its body.
-fn fenced_blocks(text: &str) -> Vec<(String, String)> {
+pub(super) fn fenced_blocks(text: &str) -> Vec<(String, String)> {
     let mut blocks = Vec::new();
     // The open block: its fence character and length, info string and body.
     let mut open: Option<(char, usize, String, Vec<&str>)> = None;
@@ -924,8 +924,8 @@ pub fn tool_definition(kind: ResultKind) -> Value {
                 "additionalProperties": false
             }
         }),
-        // Never served: a Planner stage has no MCP server (it reports through ExitPlanMode).
-        ResultKind::Planner => json!({
+        // Never served: a Planner or Triage stage has no MCP server (it reports through ExitPlanMode).
+        ResultKind::Planner | ResultKind::Round => json!({
             "name": TOOL_NAME,
             "title": "Submit result",
             "description": "Not used by the Planner: hand your plan over with ExitPlanMode.",
@@ -961,6 +961,7 @@ pub fn result_instructions(kind: ResultKind) -> String {
              DCTerminal answers ExitPlanMode with \"Plan received\": stop there and end your turn with a short summary; do not start implementing. \
              If it answers with problems instead, fix each one and call ExitPlanMode again."
         ),
+        ResultKind::Round => super::round::round_instructions(&[]),
         ResultKind::Implementer => format!(
             "## Report your result to DCTerminal\n\n\
              This stage runs in a DCTerminal pipeline. When your draft pull requests are open, and before you finish your turn, call the `{TOOL_NAME}` tool \
@@ -980,6 +981,10 @@ pub fn result_instructions(kind: ResultKind) -> String {
 /// folder, and to set `repo` on each task when its plan spans them. With no
 /// repos, or on any other stage, exactly [`result_instructions`].
 pub fn stage_instructions(kind: ResultKind, repos: &[crate::store::RepoEntry]) -> String {
+    // R1: Triage names the repos in its own instructions.
+    if kind == ResultKind::Round {
+        return super::round::round_instructions(repos);
+    }
     let base = result_instructions(kind);
     if kind != ResultKind::Planner || repos.is_empty() {
         return base;
@@ -1012,6 +1017,7 @@ pub fn block_reason(kind: ResultKind) -> String {
              {\"tasks\": [{\"id\": \"pr1\", \"title\": \"…\", \"dependsOn\": [], \"manual\": false, \"summary\": \"…\"}]}. \
              Do not ask the user and do not start implementing; then finish your turn."
             .to_string(),
+        ResultKind::Round => super::round::round_block_reason(),
         ResultKind::Implementer => format!(
             "You have not reported your result yet. Call the `{FULL_TOOL_NAME}` tool now with the draft pull requests you opened: \
              {{\"prs\": [{{\"url\": \"https://…/pull/N\", \"branch\": \"…\", \"title\": \"…\"}}], \"summary\": \"…\", \"checks\": [{{\"command\": \"…\", \"passed\": true}}]}}. \
@@ -1040,7 +1046,7 @@ pub fn accepted_message(kind: ResultKind, result: &Value) -> String {
                 .unwrap_or_default();
             format!("DCTerminal received your result{story}: {count} pull request(s){blocked}. Finish your turn now.")
         }
-        ResultKind::Planner => PLAN_RECEIVED.to_string(),
+        ResultKind::Planner | ResultKind::Round => PLAN_RECEIVED.to_string(),
     }
 }
 

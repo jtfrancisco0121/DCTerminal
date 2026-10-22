@@ -1,0 +1,16 @@
+{
+  "id": "round",
+  "name": "QA round",
+  "description": "Triage tickets into plans and merge waves, review the round, then approve its scope and wave order.",
+  "approveAtEnd": true,
+  "stages": [
+    { "id": "triage", "roleId": "role_triage", "kind": "planner", "round": true, "title": "Triage" },
+    {
+      "id": "plan_reviewer",
+      "roleId": "role_plan_reviewer",
+      "kind": "reviewer",
+      "title": "Plan Reviewer",
+      "loopBack": { "to": "triage", "minSeverity": "MEDIUM" }
+    }
+  ]
+}

@@ -139,15 +139,17 @@ mod tests {
     }
 
     #[test]
-    fn seed_has_eight_roles_with_plan_reviewer_after_planner() {
+    fn seed_has_nine_roles_with_plan_reviewer_after_planner() {
         use crate::roles::RolesFile;
         use crate::store::{read_json, seed_output_path};
         let ids: Vec<&str> = all_role_specs().iter().map(|s| s.id).collect();
-        assert_eq!(ids.len(), 8);
+        // R1 added Triage, last.
+        assert_eq!(ids.len(), 9);
+        assert_eq!(ids[8], "role_triage");
         assert_eq!(ids[0], "role_planner");
         assert_eq!(ids[1], "role_plan_reviewer");
         let seed: RolesFile = read_json(&seed_output_path()).expect("roles seed");
-        assert_eq!(seed.roles.len(), 8);
+        assert_eq!(seed.roles.len(), 9);
         let reviewer = seed
             .roles
             .iter()

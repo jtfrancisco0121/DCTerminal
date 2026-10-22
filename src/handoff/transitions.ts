@@ -41,6 +41,7 @@ export const BUILT_IN_ROLE_NAMES: Readonly<Record<string, string>> = {
   role_general: "General",
   role_recommendation: "Recommendation",
   role_codebase_audit: "Codebase Audit",
+  role_triage: "Triage",
 };
 
 /**

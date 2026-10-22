@@ -50,7 +50,7 @@ fn built_in_loop_backs_have_no_round_cap_and_keep_their_gates() {
         .flat_map(|def| def.stages.iter().filter_map(|stage| stage.loop_back.as_ref()))
         .map(|back| back.max_rounds)
         .collect();
-    assert_eq!(caps, vec![None, None, None]);
+    assert_eq!(caps, vec![None, None, None, None]);
     let implementer = eagle1.stage("implementer").unwrap();
     assert!(implementer.checkpoint);
     assert_eq!(
@@ -334,4 +334,46 @@ fn a_verify_gate_round_trips_and_needs_steps_of_at_most_2000_characters() {
     assert_eq!(validate_user_pipelines_with(&[with("x".repeat(MAX_VERIFY_STEPS_CHARS))], None), Ok(()));
     assert!(err(with(" \n ".into())).contains("a verify gate needs steps (1 to 2000 characters)"));
     assert!(err(with("x".repeat(MAX_VERIFY_STEPS_CHARS + 1))).contains("a verify gate needs steps"));
+}
+
+#[test]
+fn the_qa_round_pipeline_is_triage_then_its_review_on_engine_2_and_waits_for_your_approval() {
+    // R1
+    let round = find("round").expect("the QA round is built in");
+    assert_eq!(round.name, "QA round");
+    assert!(round.approve_at_end);
+    assert_eq!(
+        round.stage_pairs(),
+        [("triage", "role_triage"), ("plan_reviewer", "role_plan_reviewer")].map(|(a, b)| (a.to_string(), b.to_string()))
+    );
+    let triage = round.stage("triage").unwrap();
+    assert!(triage.round);
+    assert_eq!(triage.kind(), StageKind::Planner);
+    assert_eq!(crate::bridge::launch::engine_for(&round), crate::bridge::launch::ENGINE_V2);
+    // Eagle-Eye's stages are not round stages, and say nothing about it.
+    let eagle1 = find("eagle1").unwrap();
+    assert!(!eagle1.approve_at_end && eagle1.stages.iter().all(|s| !s.round));
+    assert!(serde_json::to_value(&eagle1).unwrap().get("approveAtEnd").is_none());
+}
+
+#[test]
+fn a_round_stage_is_a_planner_and_its_pipeline_has_no_implementer() {
+    // R1
+    let builtin_keys = HashSet::new();
+    let mut def = user_def("round_copy");
+    def.stages[0].round = true;
+    let err = check_pipeline(&def, &builtin_keys, None).unwrap_err();
+    assert!(err.contains("hands over a round, so its kind is planner"), "{err}");
+    let mut def: PipelineDef = serde_json::from_value(serde_json::json!({
+        "id": "my_round", "name": "My round", "approveAtEnd": true,
+        "stages": [
+            { "id": "triage", "roleId": "role_triage_copy", "kind": "planner", "round": true, "title": "Triage" },
+            { "id": "review", "roleId": "role_plan_reviewer", "title": "Review", "loopBack": { "to": "triage" } }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(check_pipeline(&def, &builtin_keys, None), Ok(()));
+    def.stages.push(serde_json::from_value(serde_json::json!({ "id": "impl", "roleId": "role_implementer", "title": "Implementer" })).unwrap());
+    let err = check_pipeline(&def, &builtin_keys, None).unwrap_err();
+    assert!(err.contains("has no implementer stage"), "{err}");
 }

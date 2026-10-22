@@ -21,6 +21,7 @@ pub fn all_role_specs() -> Vec<RoleSeedSpec> {
         general_spec(),
         recommendation_spec(),
         codebase_audit_spec(),
+        triage_spec(),
     ]
 }
 
@@ -307,6 +308,38 @@ fn codebase_audit_spec() -> RoleSeedSpec {
         color: "#F85149",
         substitutions: &[],
         fields: vec![],
+    }
+}
+
+/// R1: Triage groups a QA round's tickets into plans and merge waves.
+fn triage_spec() -> RoleSeedSpec {
+    RoleSeedSpec {
+        id: "role_triage",
+        name: "Triage",
+        source_file: "role-triage.md",
+        default_mode: "plan",
+        color: "#39C5BB",
+        substitutions: &[
+            ("[Round name]", "{{title}}"),
+            ("[Paste or dictate the tickets, or paste your own round plan]", "{{request}}"),
+            (
+                "[Release, deadlines, product decisions already made, repos to leave alone, etc.]",
+                "{{additionalContext}}",
+            ),
+        ],
+        fields: vec![
+            field_text("title", "Round", "[Round name]", true),
+            field_multiline_optional(
+                "request",
+                "Tickets or your plan",
+                "[Paste or dictate the tickets, or paste your own round plan]",
+            ),
+            field_multiline_optional(
+                "additionalContext",
+                "Additional Context",
+                "[Release, deadlines, product decisions already made, repos to leave alone, etc.]",
+            ),
+        ],
     }
 }
 
