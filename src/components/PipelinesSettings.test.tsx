@@ -37,7 +37,7 @@ describe("Settings › Pipelines", () => {
     expect(editor.value).toContain('"id": "bugfix"');
     fireEvent.click(screen.getByRole("button", { name: "Save pipelines" }));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
-    expect(allPipelineDefs().map((def) => def.id)).toEqual(["eagle1", "eagle2", "round", "bugfix"]);
+    expect(allPipelineDefs().map((def) => def.id)).toEqual(["eagle1", "eagle2", "eagle-eye-l", "round", "bugfix"]);
     expect(screen.getByText("Saved 1 pipeline.")).toBeTruthy();
   });
 

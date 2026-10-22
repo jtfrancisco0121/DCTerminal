@@ -21,6 +21,7 @@
 //! plan.md, tasks.json           the Planner's plan and tasks (ExitPlanMode hook)
 //! round.md, round.json          a Triage stage's QA round instead (R1, `round`)
 //! prs.json, prs-<lane>.json     what each Implementer reported (submit_result)
+//! artifacts.json, *.md          F1: each artifact stage's documents (submit_result)
 //! inbox/                        finished turns (Stop hook) and Needs you
 //!                               (PermissionRequest, Notification) for the app
 //! bridge.log                    what went wrong, unknown payload fields
@@ -39,6 +40,7 @@
 //! launch (D24) and falls back to engine 1; `watch` hands finished turns to
 //! the run actor (`run_actor`, V3).
 
+pub mod artifact;
 pub mod folder;
 pub mod gate;
 mod hook;

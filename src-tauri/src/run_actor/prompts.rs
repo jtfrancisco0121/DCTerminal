@@ -59,6 +59,43 @@ pub struct StageSources {
     /// The run's hand-off files that exist, as (what, path): the plan, the
     /// tasks, the pull requests, and the ClickUp tickets ([`TICKETS_LABEL`]).
     pub run_files: Vec<(String, String)>,
+    /// F2: what a Planner or a plan review does with the run's documents
+    /// (the brief, the PRD, the architecture), when it has any ([`document_note`]).
+    pub document_note: Option<String>,
+}
+
+/// F2: the line that tells a Planner to base its plan and its pull-request
+/// split on the run's documents (`brief.md`, `prd.md`, `architecture.md`,
+/// from the artifact stages), and a plan review to check the plan against
+/// them. `None` with no documents, or for any other stage.
+pub fn document_note(documents: &[(String, String)], planner: bool, plan_review: bool) -> Option<String> {
+    if documents.is_empty() || !(planner || plan_review) {
+        return None;
+    }
+    let names: Vec<String> = documents
+        .iter()
+        .map(|(_, path)| {
+            std::path::Path::new(path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone())
+        })
+        .collect();
+    let names = names.join(", ");
+    Some(if planner {
+        format!(
+            "This run has feature documents ({names}; their paths are in the hand-off files below). Read them first and base the plan \
+             and its pull-request split on them: cover every numbered PRD requirement and follow the architecture's modules and order. \
+             You cannot edit them in plan mode; say in Open questions where one is wrong."
+        )
+    } else {
+        format!(
+            "This run has feature documents ({names}; their paths are in the hand-off files below). Check the plan against them: \
+             every numbered PRD requirement is covered and the plan follows the architecture. When a problem is in a document rather \
+             than the plan, set the finding's `area` to `prd`, `architecture` or `brief`: such a finding stops for the user, \
+             because the Planner cannot edit those documents."
+        )
+    })
 }
 
 /// R1: what a reviewer of a QA round checks, besides its template.
@@ -362,6 +399,9 @@ pub fn stage_values(role: &Role, reviewer: bool, src: &StageSources) -> StageVal
                 previous.trim()
             ));
         }
+    }
+    if let Some(note) = &src.document_note {
+        context.push(note.clone());
     }
     context.push(run_files_note(&src.run_files));
     context.push(answer(&src.first_answers, "additionalContext"));

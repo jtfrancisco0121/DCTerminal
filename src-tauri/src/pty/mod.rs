@@ -1184,6 +1184,10 @@ pub struct RoleTerminalInput {
     /// puts their summary into the request.
     #[serde(default)]
     pub intake_id: Option<String>,
+    /// F3: the size (S, M or L) the start screen picked for the run this
+    /// start begins; kept on the run when it is that pipeline's size.
+    #[serde(default)]
+    pub size: Option<String>,
 }
 
 /// The chain this start begins (`RoleTerminalInput::start_chain`), when the
@@ -1269,6 +1273,16 @@ fn label_starting_chain(
         }
     }
     Ok(Some(StartedChain { chain_id, run_id, made_run }))
+}
+
+/// F3: keep `size` on the run `run_id` when it is that run's pipeline's size.
+fn record_size(store: &Mutex<StateStore>, run_id: Option<&str>, size: Option<&str>) -> Result<(), String> {
+    let Some(run_id) = run_id else { return Ok(()) };
+    let mut state = store.lock().map_err(|err| err.to_string())?;
+    let Some(run) = state.pipeline_run_by_id_mut(run_id) else { return Ok(()) };
+    let Some(size) = crate::pipelines::sizes::checked_size(size, &run.kind) else { return Ok(()) };
+    run.size = Some(size.to_string());
+    state.save()
 }
 
 /// The rest of a start after [`label_starting_chain`] labelled `started`:
@@ -1651,7 +1665,11 @@ fn role_terminal_start_blocking(
     let repos = settings.lock().map_err(|err| err.to_string())?.repos().to_vec();
     let mut instructions = bridge
         .as_ref()
-        .map(|plan| crate::bridge::schema::stage_instructions(plan.kind, &repos))
+        .map(|plan| {
+            // F1: an artifact stage is told the run folder its documents go in.
+            let run_dir = crate::bridge::folder::run_dir(&runs_root(&app), &plan.run_id);
+            crate::bridge::schema::stage_instructions_in(plan.kind, &repos, run_dir.as_deref())
+        })
         .unwrap_or_default();
     // L3: a lane's Implementer whose task has stories gets their list, and
     // the run records them.
@@ -1792,6 +1810,10 @@ fn role_terminal_start_blocking(
         }
         None => None,
     };
+    // F3: the run this start made keeps the size you picked.
+    if let Some(started) = started.as_ref().filter(|started| started.made_run) {
+        record_size(&store, started.run_id.as_deref(), input.size.as_deref())?;
+    }
     // A failure from here on undoes the chain label above (and the run it made).
     let runs_root = || bridge_paths(&app).ok().map(|(runs, _)| runs);
     after_starting_label(&app, &store, &tab_id, started.as_ref(), runs_root, || {
@@ -2895,6 +2917,32 @@ mod tests {
         assert!(!run.autopilot.as_ref().is_some_and(|a| a.enabled));
         assert_eq!(state.tab_by_id(&tab).unwrap().chain.as_ref().map(|c| c.chain_id.clone()), Some(chain.chain_id.clone()));
         assert_eq!(*events.0.borrow(), vec![chain.chain_id.clone()]);
+    }
+
+    /// F3: a size-L start from the form begins Eagle-Eye L, its Analyst
+    /// launches bridged as an artifact stage, and the run keeps the size;
+    /// a size that is not the pipeline's is not kept.
+    #[test]
+    fn a_size_l_start_begins_eagle_eye_l_and_the_run_keeps_its_size() {
+        let dir = crate::test_support::TempDir::new("plan_start_size_l");
+        let store = store_with_engine2_run(&dir);
+        let tab = draft_tab(&store, "role_analyst");
+        let mut input = start_input("role_analyst", Some(&tab), Some("eagle-eye-l"));
+        input.size = Some("L".into());
+        let (starting, plan) = plan_start(&store, &input, "role_analyst", true).unwrap();
+        let chain = starting.expect("the start begins Eagle-Eye L");
+        assert_eq!((chain.kind.as_str(), chain.total), ("eagle-eye-l", 7));
+        assert_eq!(plan.expect("bridged").kind, crate::bridge::ResultKind::Artifact);
+        let started = label_starting_chain(&Recorded::default(), &store, &tab, chain.clone(), None).unwrap().unwrap();
+        record_size(&store, started.run_id.as_deref(), input.size.as_deref()).unwrap();
+        {
+            let state = store.lock().unwrap();
+            let run = state.pipeline_run_by_id(&chain.chain_id).unwrap();
+            assert_eq!((run.engine, run.size.as_deref()), (crate::bridge::launch::ENGINE_V2, Some("L")));
+        }
+        record_size(&store, started.run_id.as_deref(), Some("S")).unwrap();
+        let state = store.lock().unwrap();
+        assert_eq!(state.pipeline_run_by_id(&chain.chain_id).unwrap().size.as_deref(), Some("L"), "S is not Eagle-Eye L's size");
     }
 
     #[test]

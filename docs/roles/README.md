@@ -14,7 +14,12 @@ Markdown files here are the **authoritative** persona prompts. DCTerminal conver
 | `role-general.md` | `role_general` |
 | `role-recommendation.md` | `role_recommendation` |
 | `role-codebase-audit.md` | `role_codebase_audit` |
+| `role-analyst.md` | `role_analyst` (F2: writes `brief.md`) |
+| `role-pm.md` | `role_pm` (F2: writes `prd.md`) |
+| `role-architect.md` | `role_architect` (F2: writes `architecture.md`) |
 | `role-triage.md` | `role_triage` (R1: a QA round's Triage stage) |
+
+The Analyst, PM and Architect are DCTerminal's own templates, written for Eagle-Eye L (Track F). They run as `artifact` stages: each writes its document into the run folder and reports it through `submit_result` (`{{result_instructions}}`). No wording is taken from other projects' templates; if any is added later, credit it in that role's file.
 
 ## After editing a template
 

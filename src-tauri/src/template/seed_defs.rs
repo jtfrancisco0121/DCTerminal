@@ -21,6 +21,9 @@ pub fn all_role_specs() -> Vec<RoleSeedSpec> {
         general_spec(),
         recommendation_spec(),
         codebase_audit_spec(),
+        analyst_spec(),
+        pm_spec(),
+        architect_spec(),
         triage_spec(),
     ]
 }
@@ -311,6 +314,64 @@ fn codebase_audit_spec() -> RoleSeedSpec {
     }
 }
 
+/// F2: the Analyst writes `brief.md` (an artifact stage, the first of Eagle-Eye L).
+fn analyst_spec() -> RoleSeedSpec {
+    RoleSeedSpec {
+        id: "role_analyst",
+        name: "Analyst",
+        source_file: "role-analyst.md",
+        default_mode: "agent",
+        color: "#39C5CF",
+        substitutions: &[
+            ("[SHORT TITLE]", "{{title}}"),
+            ("[DESCRIBE THE FEATURE OR PROBLEM]", "{{request}}"),
+            ("[DESCRIBE WHAT SHOULD BE TRUE WHEN IT IS DONE]", "{{expectedBehavior}}"),
+            ("[OPTIONAL CONTEXT]", "{{additionalContext}}"),
+        ],
+        fields: vec![
+            field_text("title", "Title", "[SHORT TITLE]", true),
+            field_multiline("request", "Request", "[DESCRIBE THE FEATURE OR PROBLEM]", true),
+            field_multiline(
+                "expectedBehavior",
+                "What should be true when it is done",
+                "[DESCRIBE WHAT SHOULD BE TRUE WHEN IT IS DONE]",
+                true,
+            ),
+            field_multiline_optional("additionalContext", "Additional Context", "[OPTIONAL CONTEXT]"),
+        ],
+    }
+}
+
+/// F2: the PM writes `prd.md` from the brief.
+fn pm_spec() -> RoleSeedSpec {
+    document_spec("role_pm", "PM", "role-pm.md", "#DB61A2")
+}
+
+/// F2: the Architect writes `architecture.md` from the brief and the PRD.
+fn architect_spec() -> RoleSeedSpec {
+    document_spec("role_architect", "Architect", "role-architect.md", "#E3B341")
+}
+
+/// A document role after the Analyst: the original request and the context
+/// (which names the run's hand-off files, the earlier documents among them).
+fn document_spec(id: &'static str, name: &'static str, source_file: &'static str, color: &'static str) -> RoleSeedSpec {
+    RoleSeedSpec {
+        id,
+        name,
+        source_file,
+        default_mode: "agent",
+        color,
+        substitutions: &[
+            ("[PASTE THE ORIGINAL REQUEST HERE]", "{{originalTask}}"),
+            ("[OPTIONAL CONTEXT]", "{{additionalContext}}"),
+        ],
+        fields: vec![
+            field_multiline("originalTask", "Original Request", "[PASTE THE ORIGINAL REQUEST HERE]", true),
+            field_multiline_optional("additionalContext", "Additional Context", "[OPTIONAL CONTEXT]"),
+        ],
+    }
+}
+
 /// R1: Triage groups a QA round's tickets into plans and merge waves.
 fn triage_spec() -> RoleSeedSpec {
     RoleSeedSpec {
@@ -318,7 +379,7 @@ fn triage_spec() -> RoleSeedSpec {
         name: "Triage",
         source_file: "role-triage.md",
         default_mode: "plan",
-        color: "#39C5BB",
+        color: "#7EE787",
         substitutions: &[
             ("[Round name]", "{{title}}"),
             ("[Paste or dictate the tickets, or paste your own round plan]", "{{request}}"),

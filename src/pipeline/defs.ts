@@ -11,6 +11,7 @@
  */
 import eagle1 from "../../docs/pipelines/eagle1.json";
 import eagle2 from "../../docs/pipelines/eagle2.json";
+import eagleL from "../../docs/pipelines/eagle-eye-l.json";
 import round from "../../docs/pipelines/round.json";
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
@@ -32,13 +33,13 @@ export type GateDef =
   | { kind: "verify"; steps: string };
 
 /** What a stage does, whatever its role is called. */
-export type StageKind = "planner" | "reviewer" | "implementer" | "generic";
+export type StageKind = "planner" | "reviewer" | "implementer" | "generic" | "artifact";
 
 /**
  * What a role does on its stage, the reviewer split by what it reviews: a
  * plan (its round goes back to a planner) or the work.
  */
-export type RoleBehaviour = "planner" | "plan_reviewer" | "implementer" | "pr_reviewer" | "generic";
+export type RoleBehaviour = "planner" | "plan_reviewer" | "implementer" | "pr_reviewer" | "generic" | "artifact";
 
 export type StageDef = {
   id: string;
@@ -79,6 +80,8 @@ export const DEFAULT_PAUSE_AT_USAGE_PERCENT = 90;
 export const BUILT_IN_PIPELINES: readonly PipelineDef[] = [
   { ...(eagle1 as PipelineDef), builtIn: true },
   { ...(eagle2 as PipelineDef), builtIn: true },
+  // F2: a brief, a PRD and an architecture first.
+  { ...(eagleL as PipelineDef), builtIn: true },
   // R1: the QA round (Triage, its Plan Reviewer, then your approval).
   { ...(round as PipelineDef), builtIn: true },
 ];
@@ -140,9 +143,13 @@ const BUILT_IN_BEHAVIOUR: Readonly<Record<string, RoleBehaviour>> = {
   role_plan_reviewer: "plan_reviewer",
   role_implementer: "implementer",
   role_pr_reviewer: "pr_reviewer",
+  // F2: the document roles write into the run folder.
+  role_analyst: "artifact",
+  role_pm: "artifact",
+  role_architect: "artifact",
 };
 
-const BUILT_IN_ROLE: Readonly<Record<Exclude<RoleBehaviour, "generic">, string>> = {
+const BUILT_IN_ROLE: Readonly<Record<Exclude<RoleBehaviour, "generic" | "artifact">, string>> = {
   planner: "role_planner",
   plan_reviewer: "role_plan_reviewer",
   implementer: "role_implementer",
@@ -187,7 +194,7 @@ export function roleBehaviour(roleId: string, chainKind?: string | null): RoleBe
 }
 
 /** The role that does `behaviour` on `kind`'s pipeline (its first such stage), else the built-in role. */
-export function behaviourRole(kind: string | null | undefined, behaviour: Exclude<RoleBehaviour, "generic">): string {
+export function behaviourRole(kind: string | null | undefined, behaviour: Exclude<RoleBehaviour, "generic" | "artifact">): string {
   const def = pipelineDef(kind);
   const stage = def?.stages.find((s) => stageBehaviour(def, s) === behaviour);
   return stage?.roleId ?? BUILT_IN_ROLE[behaviour];

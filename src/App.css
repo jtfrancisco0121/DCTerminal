@@ -4474,6 +4474,25 @@ mark.search-hit-current {
   font-size: var(--text-sm);
 }
 
+/* F3: the S / M / L picker under the Eagle-Eye tick. */
+.size-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+
+.size-picker .size-why {
+  flex-basis: 100%;
+}
+
+/* F1: an artifact stage's open questions. */
+.pipeline-artifact-questions {
+  margin: 0.3rem 0 0.5rem 1.2rem;
+  padding: 0;
+}
+
 .status-bar-message {
   display: inline-flex;
   align-items: center;

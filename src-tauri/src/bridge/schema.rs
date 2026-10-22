@@ -27,7 +27,11 @@ pub const MAX_SUMMARY_CHARS: usize = 300;
 const MAX_REF_CHARS: usize = 300;
 
 const REVIEWER_FIELDS: [&str; 3] = ["schema", "verdict", "findings"];
-const FINDING_FIELDS: [&str; 5] = ["severity", "summary", "pr", "file", "regression"];
+const FINDING_FIELDS: [&str; 6] = ["severity", "summary", "pr", "file", "regression", "area"];
+/// F2: what a finding is about, when it says. A plan reviewer's finding on
+/// `brief`, `prd` or `architecture` (documents the Planner cannot edit in
+/// plan mode) stops for you instead of going back to the Planner.
+pub const FINDING_AREAS: [&str; 5] = ["plan", "code", "brief", "prd", "architecture"];
 
 /// Pull requests an Implementer reports, and tasks a plan has (plan "Result schemas").
 pub const MAX_PRS: usize = 8;
@@ -55,6 +59,8 @@ pub fn validate(kind: ResultKind, args: &Value) -> Result<Value, Vec<String>> {
     match kind {
         ResultKind::Reviewer => validate_reviewer(args),
         ResultKind::Implementer => validate_implementer(args),
+        // F1: the shape only; the bridge checks the paths in the run folder.
+        ResultKind::Artifact => super::artifact::validate(args, None),
         // The Planner reports through ExitPlanMode; its stage has no tool.
         ResultKind::Planner | ResultKind::Round => Err(vec![format!(
             "the Planner hands its plan over through ExitPlanMode, not {TOOL_NAME}"
@@ -183,6 +189,13 @@ fn check_finding(index: usize, item: &Value, problems: &mut Vec<String>) -> Opti
             out.insert("regression".into(), json!(flag));
         }
         Some(other) => problems.push(format!("`{at}.regression` must be true or false, not {other}")),
+    }
+    match object.get("area") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(text)) if FINDING_AREAS.contains(&text.trim().to_ascii_lowercase().as_str()) => {
+            out.insert("area".into(), json!(text.trim().to_ascii_lowercase()));
+        }
+        Some(other) => problems.push(format!("`{at}.area` {other} is not one of {}", list(&FINDING_AREAS))),
     }
     (problems.len() == before).then_some(Value::Object(out))
 }
@@ -860,7 +873,8 @@ pub fn tool_definition(kind: ResultKind) -> Value {
                                 "summary": { "type": "string", "maxLength": MAX_SUMMARY_CHARS },
                                 "pr": { "type": "string", "description": "PR1, PR2, …; omit with one pull request" },
                                 "file": { "type": "string", "description": "path:line" },
-                                "regression": { "type": "boolean" }
+                                "regression": { "type": "boolean" },
+                                "area": { "type": "string", "enum": FINDING_AREAS, "description": "what it is about; prd or architecture for a problem in those documents" }
                             },
                             "required": ["severity", "summary"],
                             "additionalProperties": false
@@ -924,6 +938,7 @@ pub fn tool_definition(kind: ResultKind) -> Value {
                 "additionalProperties": false
             }
         }),
+        ResultKind::Artifact => super::artifact::tool_definition(),
         // Never served: a Planner or Triage stage has no MCP server (it reports through ExitPlanMode).
         ResultKind::Planner | ResultKind::Round => json!({
             "name": TOOL_NAME,
@@ -943,7 +958,7 @@ pub fn result_instructions(kind: ResultKind) -> String {
              This stage runs in a DCTerminal pipeline. Before you finish your turn, call the `{TOOL_NAME}` tool \
              (MCP server `{SERVER_NAME}`, full name `{FULL_TOOL_NAME}`) once, with:\n\n\
              - `verdict`: `APPROVED`, `APPROVED_WITH_CHANGES` or `CHANGES_REQUIRED` (`REQUEST CHANGES` and `REQUIRES REVISION` are `CHANGES_REQUIRED`).\n\
-             - `findings`: every finding from your review (at most {MAX_FINDINGS}), each with `severity` (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW` or `INFO`) and `summary` (one sentence, at most {MAX_SUMMARY_CHARS} characters), and optionally `pr` (`PR1`), `file` (`path:line`) and `regression` (`true` when it breaks something that worked before). Use `[]` when there are none.\n\n\
+             - `findings`: every finding from your review (at most {MAX_FINDINGS}), each with `severity` (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW` or `INFO`) and `summary` (one sentence, at most {MAX_SUMMARY_CHARS} characters), and optionally `pr` (`PR1`), `file` (`path:line`), `regression` (`true` when it breaks something that worked before) and `area` (`plan`, `code`, `brief`, `prd` or `architecture`: set `prd` or `architecture` when the problem is in that document, not in the plan). Use `[]` when there are none.\n\n\
              Example: `{{\"verdict\": \"CHANGES_REQUIRED\", \"findings\": [{{\"severity\": \"HIGH\", \"file\": \"src/auth.ts:42\", \"summary\": \"An expired token returns 500 instead of 401.\"}}]}}`\n\n\
              If the tool answers with an error, fix each problem it names and call it again. Still end your reply with the HANDOFF sections above."
         ),
@@ -973,6 +988,7 @@ pub fn result_instructions(kind: ResultKind) -> String {
              Example: `{{\"prs\": [{{\"url\": \"https://github.com/acme/app/pull/12\", \"branch\": \"feat/token-refresh\", \"title\": \"Refresh expired tokens\"}}], \"summary\": \"Expired tokens are refreshed once before a request fails.\", \"checks\": [{{\"command\": \"npm test\", \"passed\": true}}]}}`\n\n\
              If the tool answers with an error, fix each problem it names and call it again. Call it again after each later round too. Still end your reply with the HANDOFF sections."
         ),
+        ResultKind::Artifact => super::artifact::result_instructions(),
     }
 }
 
@@ -981,9 +997,22 @@ pub fn result_instructions(kind: ResultKind) -> String {
 /// folder, and to set `repo` on each task when its plan spans them. With no
 /// repos, or on any other stage, exactly [`result_instructions`].
 pub fn stage_instructions(kind: ResultKind, repos: &[crate::store::RepoEntry]) -> String {
+    stage_instructions_in(kind, repos, None)
+}
+
+/// [`stage_instructions`], where an artifact stage (F1) is also told the
+/// run folder its documents go in (`run_dir`).
+pub fn stage_instructions_in(kind: ResultKind, repos: &[crate::store::RepoEntry], run_dir: Option<&std::path::Path>) -> String {
     // R1: Triage names the repos in its own instructions.
     if kind == ResultKind::Round {
         return super::round::round_instructions(repos);
+    }
+    if kind == ResultKind::Artifact {
+        let base = result_instructions(kind);
+        return match run_dir {
+            Some(dir) => format!("{base}\n\n{}", super::artifact::run_folder_section(dir)),
+            None => base,
+        };
     }
     let base = result_instructions(kind);
     if kind != ResultKind::Planner || repos.is_empty() {
@@ -1024,6 +1053,7 @@ pub fn block_reason(kind: ResultKind) -> String {
              If you are blocked and opened none, say why instead: {{\"prs\": [], \"summary\": \"…\", \"blocked\": \"…\"}}. \
              Do not ask the user; then finish your turn."
         ),
+        ResultKind::Artifact => super::artifact::block_reason(),
     }
 }
 
@@ -1047,6 +1077,7 @@ pub fn accepted_message(kind: ResultKind, result: &Value) -> String {
             format!("DCTerminal received your result{story}: {count} pull request(s){blocked}. Finish your turn now.")
         }
         ResultKind::Planner | ResultKind::Round => PLAN_RECEIVED.to_string(),
+        ResultKind::Artifact => super::artifact::accepted_message(result),
     }
 }
 

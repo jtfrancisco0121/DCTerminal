@@ -37,6 +37,7 @@ fn run(round: u32) -> PipelineRun {
         manual_only: false,
         verifications: Vec::new(),
         stories: Vec::new(),
+        size: None,
     }
 }
 
@@ -65,6 +66,7 @@ fn finding(severity: &str, summary: &str) -> FindingReport {
     FindingReport {
         severity: severity.into(),
         summary: summary.into(),
+        area: None,
     }
 }
 

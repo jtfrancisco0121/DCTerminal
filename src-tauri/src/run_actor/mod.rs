@@ -196,6 +196,15 @@ pub enum UserAction {
         #[serde(default)]
         lane: Option<String>,
     },
+    /// F1: your **Answer** to the open questions of the artifact stage
+    /// `stage_id` the run waits on (or, after it reported blocked, your
+    /// **Continue** with `answer` as the note). Its session is resumed with it.
+    #[serde(rename = "artifactAnswer", rename_all = "camelCase")]
+    ArtifactAnswer {
+        stage_id: String,
+        #[serde(default)]
+        answer: Option<String>,
+    },
     /// Your answer to the `verify` gate the run waits on (L2), for
     /// `stage_id` in `lane`: **Mark verified** (`verified`) passes it and the
     /// run goes on as after a passed gate; **Failed** sends `note` back to

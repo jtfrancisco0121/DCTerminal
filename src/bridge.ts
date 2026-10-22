@@ -379,6 +379,8 @@ export type PipelineRun = {
   manualOnly?: boolean;
   /** L2: your answers to verify gates, oldest first, one per answer. A lane is verified when its latest says so. */
   verifications?: VerifyRecord[];
+  /** F3: the size picked at start (S, M or L), for a run of a sized pipeline. */
+  size?: "S" | "M" | "L" | null;
   /** L3: one record per story of each pull request built in stories, in order (a lane's, or the run's own with no lane). */
   stories?: RunStory[];
 };
@@ -420,6 +422,19 @@ export type StoryWait = {
   lane?: string | null;
   story: string;
   checkpoint: string;
+  turn?: string | null;
+  at: string;
+};
+
+/** F1: the artifact stage a run waits on (`autopilot.artifactWait`): `partial` with open questions, or `blocked` with a reason. */
+export type ArtifactWait = {
+  stageId: string;
+  stageTitle: string;
+  status: "partial" | "blocked";
+  questions?: string[];
+  reason?: string | null;
+  /** The documents it reported so far, relative to the run folder. */
+  artifacts?: string[];
   turn?: string | null;
   at: string;
 };
@@ -541,6 +556,8 @@ export type RunAutopilot = {
   verify?: VerifyWait | null;
   /** L3: the checkpoint story the run waits on, while it does. */
   storyWait?: StoryWait | null;
+  /** F1: the artifact stage whose questions (or block) the run waits on. */
+  artifactWait?: ArtifactWait | null;
 };
 
 export type ClosedTabSummary = {
@@ -1599,7 +1616,9 @@ export type ActorAction =
   /** L3: Continue after a checkpoint story: `note` goes on to the next story; `add` holds stories to add after it, one per line. */
   | { kind: "storyContinue"; lane: string | null; story: string; note?: string | null; add?: string | null }
   /** L3: send the current story again to a run stopped mid-loop. */
-  | { kind: "storyResend"; lane: string | null };
+  | { kind: "storyResend"; lane: string | null }
+  /** F1: answer an artifact stage's open questions (or continue it after a block, `answer` as the note). */
+  | { kind: "artifactAnswer"; stageId: string; answer?: string | null };
 
 /** What a button did on an engine-2 run. */
 export type ActorOutcome = {
@@ -2222,12 +2241,14 @@ export async function roleTerminalStart(input: {
    * Eagle mode: this start begins a chain of this kind. The core makes its
    * run before the launch, so the first stage launches with the bridge too.
    */
-  startChain?: "eagle1" | "eagle2" | "round" | null;
+  startChain?: import("./pipeline/eagleStart").EagleChain | null;
   /**
    * C2: the ClickUp tickets Start fetched (`clickupIntakeSnapshot`). An
    * engine-2 run's first stage gets them as the run's `tickets.json`.
    */
   intakeId?: string | null;
+  /** F3: the size (S, M or L) the start screen picked for the run `startChain` begins; kept on the run. */
+  size?: import("./pipeline/sizes").RunSize | null;
 }): Promise<TerminalStartResult> {
   return invoke<TerminalStartResult>("role_terminal_start", {
     input: {
@@ -2242,6 +2263,7 @@ export async function roleTerminalStart(input: {
       chain: input.chain ?? null,
       startChain: input.startChain ?? null,
       intakeId: input.intakeId ?? null,
+      size: input.size ?? null,
     },
     onOutput: input.onOutput,
   });

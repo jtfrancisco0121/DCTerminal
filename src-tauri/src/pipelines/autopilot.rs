@@ -24,6 +24,9 @@ pub struct FindingReport {
     pub severity: String,
     #[serde(default)]
     pub summary: String,
+    /// F2: what the finding is about (`prd`, `architecture`, …), when it says.
+    #[serde(default)]
+    pub area: Option<String>,
 }
 
 /// What the run actor read from the stage's finished turn (its bridged result).
@@ -71,6 +74,9 @@ pub struct TurnReport {
     /// L3: the Implementer's `summary`, kept on the story it finished.
     #[serde(default)]
     pub summary: Option<String>,
+    /// F1: an artifact stage's result (status, documents, open questions).
+    #[serde(default)]
+    pub artifact: Option<super::artifacts::ArtifactReport>,
 }
 
 /// Key of per-stage state (gate results, retries): `stage` or `stage@lane`.
@@ -449,6 +455,13 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             ),
         );
     }
+    // F1: an artifact stage with open questions, or blocked, waits for your
+    // answer; a complete one goes on below like any stage with no loop-back.
+    if let Some(artifact) = report.artifact.as_ref().filter(|_| stage.kind() == super::StageKind::Artifact) {
+        if let Some(decision) = super::artifacts::decide_report(run, &stage, artifact, turn) {
+            return decision;
+        }
+    }
     if let Some(why) = report.blocked.as_deref().map(str::trim).filter(|why| !why.is_empty()) {
         // An Implementer that could not finish waits for you, with its reason.
         return stop(
@@ -652,6 +665,11 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 format!("{} asked for changes, but this stage has no loop-back.", stage.title),
             );
         };
+        // F2: a plan review that blames a document the Planner cannot edit
+        // in plan mode waits for you instead of going back to the Planner.
+        if let Some(decision) = super::artifacts::document_findings_stop(def, run, &stage, lane, &severities, threshold) {
+            return decision;
+        }
         // Rounds per loop-back edge: this reviewer's own rounds so far. With
         // no cap, rounds go back until the reviewer approves.
         let edge_round = review_round(run, lane, &stage);

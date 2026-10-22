@@ -2745,3 +2745,7 @@ fn a_loop_back_to_the_implementer_skips_no_story() {
     assert_eq!(story_states(&fx, None), [("s1".to_string(), Done), ("s2".into(), Active), ("s3".into(), Pending)]);
     fx.run(|run| assert!(!run.events.iter().any(|e| e.outcome.as_deref() == Some("storySkipped"))));
 }
+
+// F1: artifact stages on the actor, with this file's fixture.
+#[path = "artifact_tests.rs"]
+mod artifact_tests;
