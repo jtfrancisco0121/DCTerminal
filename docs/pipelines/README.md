@@ -48,6 +48,22 @@ A stage of kind `artifact` writes documents (a brief, a PRD, an architecture) in
 
 Each accepted result is also kept in the run folder's `artifacts.json` (each stage's latest status and documents). The next stages' prompts list the documents among the run's hand-off files (`Analyst document: …/brief.md`); a document from a stage that did not report `complete` (you handed it on yourself) is listed as such.
 
+### Eagle-Eye L: a brief, a PRD and an architecture first (F2)
+
+A built-in pipeline, `eagle-eye-l` (`docs/pipelines/eagle-eye-l.json`), runs three document roles before Eagle-Eye 1's stages: **Analyst** → **PM** → **Architect** → Planner → Plan Reviewer (loops back to the Planner) → checkpoint → Implementer → PR Reviewer (loops back to the Implementer). Every stage reports through the bridge, so its runs are engine 2. Picking the Analyst on the start screen with Eagle-Eye ticked begins it.
+
+The three roles are our own templates (`docs/roles/role-analyst.md`, `role-pm.md`, `role-architect.md`), each an `artifact` stage that writes one file into the run folder:
+
+| Role | Writes | What it holds |
+|---|---|---|
+| Analyst | `brief.md` | The problem, the users, success measures, scope, constraints, what exists today, and open questions. It reports `partial` with its questions when a decision is missing. |
+| PM | `prd.md` | Numbered functional requirements (`FR1`, …), each with an acceptance check and a priority; non-functional requirements (`NFR1`, …) with checks; what is out of scope; dependencies and risks. |
+| Architect | `architecture.md` | The real modules to change (with the requirements each serves), new code, data and interfaces (API, IPC, file formats), testing, risks, the repo's own rules, and a suggested order. |
+
+The Analyst's form (title, request, what should be true when it is done, context) is what the Planner's form is filled from later. The PM and the Architect get the request, and their context lists the earlier documents among the run's hand-off files.
+
+The Planner's prompt lists `brief.md`, `prd.md` and `architecture.md` (the ones that exist) and tells it to base the plan and its pull-request split on them: every numbered PRD requirement covered, the architecture's modules and order followed. The Plan Reviewer gets them too, and is told to check the plan against them. A reviewer's finding may carry an optional `area` (`plan`, `code`, `brief`, `prd` or `architecture`). When a plan review (a reviewer whose round goes back to a Planner) asks for changes with a blocking finding whose `area` is `brief`, `prd` or `architecture`, the run waits with `checkpoint` and lists those findings instead of sending the round back: the Planner runs in plan mode and cannot edit those files. Fix the document (or ask its stage to), then send the plan back or hand it on yourself. A finding on the plan goes back to the Planner as before, and a PR review's findings go back to the Implementer whatever their area.
+
 ### Hidden stages, Watch and Take over
 
 Stage terminals the run actor opens start **hidden**: they run at 120×40 with nothing drawing them, and the app keeps the newest 2 MB of each one's output. Opening the stage's tab, **Watch in split** on the overview, or a grid cell **watches** it: the view replays that output, then goes live, and the terminal is resized to the view once so Claude Code redraws its screen cleanly. When the last view of a stage leaves the screen, the app lets go of it again; closing a view never stops a stage.

@@ -2198,7 +2198,7 @@ export async function roleTerminalStart(input: {
    * Eagle mode: this start begins a chain of this kind. The core makes its
    * run before the launch, so the first stage launches with the bridge too.
    */
-  startChain?: "eagle1" | "eagle2" | null;
+  startChain?: import("./pipeline/eagleStart").EagleChain | null;
   /**
    * C2: the ClickUp tickets Start fetched (`clickupIntakeSnapshot`). An
    * engine-2 run's first stage gets them as the run's `tickets.json`.

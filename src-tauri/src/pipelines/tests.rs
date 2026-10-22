@@ -50,7 +50,7 @@ fn built_in_loop_backs_have_no_round_cap_and_keep_their_gates() {
         .flat_map(|def| def.stages.iter().filter_map(|stage| stage.loop_back.as_ref()))
         .map(|back| back.max_rounds)
         .collect();
-    assert_eq!(caps, vec![None, None, None]);
+    assert_eq!(caps, vec![None; 5], "Eagle-Eye 1, 2 and L (F2)");
     let implementer = eagle1.stage("implementer").unwrap();
     assert!(implementer.checkpoint);
     assert_eq!(
