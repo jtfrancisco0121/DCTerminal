@@ -1881,6 +1881,36 @@ export async function roundGet(key: string): Promise<RoundView | null> {
   return invoke<RoundView | null>("round_get", { key });
 }
 
+/** R3: a place in a repo's merge queue. */
+export type QueueState = "open" | "draft" | "merged" | "closed" | "missing" | "parked" | "unknown";
+
+/** R3: one place in a repo's merge queue: a pull request, or a plan with none there yet. */
+export type QueueEntry = {
+  planId: string;
+  wave?: number | null;
+  lane?: string | null;
+  url?: string | null;
+  title: string;
+  number?: number | null;
+  state: QueueState;
+  base?: string | null;
+  /** The next pull request to merge in this repo (at most one). */
+  next: boolean;
+  warnings: string[];
+  /** What it waits for before it is next. */
+  waitsFor?: string | null;
+};
+
+export type RepoQueue = { repo: string; entries: QueueEntry[] };
+
+/** R3: a round's merge queue, per repo. */
+export type MergeQueueView = { roundId: string; repos: RepoQueue[]; checkedAt: string };
+
+/** R3: the round's merge queue, read through your gh (read-only); null when `key` names no round. */
+export async function roundMergeQueue(key: string): Promise<MergeQueueView | null> {
+  return invoke<MergeQueueView | null>("round_merge_queue", { key });
+}
+
 /** R2: a round button, answered with the round as it is after it. */
 export async function roundAction(action: RoundAction): Promise<RoundView> {
   return invoke<RoundView>("round_action", { action });

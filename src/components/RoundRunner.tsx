@@ -13,6 +13,7 @@ import { allPipelineDefs } from "../pipeline/defs";
 import { isForRun, OVERVIEW_FALLBACK_POLL_MS } from "../pipeline/overviewRefresh";
 import { DEFAULT_PLAN_PIPELINE, MAX_RUNS_AT_ONCE, planPipelines, roundProgress, waveChoices } from "../pipeline/roundRunner";
 import { errorText, InlineNotice } from "./InlineNotice";
+import { MergeQueue } from "./MergeQueue";
 
 type Props = {
   /** The Triage run whose round this is. */
@@ -252,6 +253,7 @@ export function RoundRunner({ triageRunId, runComplete, waves, onOpenRun }: Prop
           </ul>
         )}
       </section>
+      <MergeQueue roundKey={round.id} />
     </section>
   );
 }

@@ -1,6 +1,7 @@
 //! QA rounds (Track R). R1: a Triage run's round as the chain overview
 //! shows it (`round.json` and `round.md` from its run folder). R2: the
-//! round view and its buttons, which go to the round runner.
+//! round view and its buttons, which go to the round runner. R3: the
+//! round's merge queue.
 
 use crate::bridge::round::{read_round, RunRound, ROUND_MD_FILE};
 use serde::Serialize;
@@ -72,4 +73,35 @@ pub async fn round_action(
     let store = app.state::<std::sync::Mutex<crate::store::StateStore>>();
     let store = store.lock().map_err(|e| e.to_string())?;
     crate::rounds::view(&store, &rounds_root, &id).ok_or_else(|| format!("unknown round: {id}"))
+}
+
+/// R3: the round's merge queue (`key`: its id, its Triage run or a plan
+/// run), with each pull request's state read through your `gh`. Read-only:
+/// it never merges, rebases or pushes. The store is copied from first; the
+/// files and GitHub are read on a blocking thread with no lock held.
+#[tauri::command]
+pub async fn round_merge_queue(
+    app: tauri::AppHandle,
+    key: String,
+) -> Result<Option<crate::rounds::merge_queue::MergeQueueView>, String> {
+    use tauri::Manager;
+    let runs = crate::bridge::launch::runs_root(&crate::data_dir::app_data_dir(&app).path);
+    let inputs = {
+        let store = app.state::<std::sync::Mutex<crate::store::StateStore>>();
+        let store = store.lock().map_err(|e| e.to_string())?;
+        crate::rounds::merge_queue::inputs(&store, &runs, &key)
+    };
+    let Some(inputs) = inputs else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let gh = crate::github::runner::find_gh().map(crate::github::runner::GhCli::new);
+        let api: Result<&dyn crate::github::runner::GhApi, String> = match gh.as_ref() {
+            Some(cli) => Ok(cli),
+            None => Err("gh is not installed: install the GitHub CLI and sign in (gh auth login)".to_string()),
+        };
+        Some(crate::rounds::merge_queue::build(inputs, api))
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
