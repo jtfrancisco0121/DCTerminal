@@ -21,6 +21,7 @@ import { tickedTickets } from "../clickup/intakeModel";
 import type { IntakeDraft } from "../clickup/intakeModel";
 import { CursorHistoryList } from "../components/CursorHistoryList";
 import { FolderPicker } from "../components/FolderPicker";
+import { WorkspaceLine } from "../components/WorkspaceLine";
 import { errorText } from "../components/InlineNotice";
 import { ModelPicker } from "../components/ModelPicker";
 import { RadioGroup, radioProps } from "../components/RadioGroup";
@@ -627,6 +628,7 @@ export function StartScreen({
                 </>
               )}
             </div>
+            <WorkspaceLine folder={displayedFolder} />
             {sizePicker}
             {eagleToggle && eagleOn && rememberedSurface(roleId) === "terminal" && (
               <ClickUpIntake

@@ -92,4 +92,14 @@ describe("Settings › Repos (L1)", () => {
     expect(confirm.mock.calls[0][0]).toContain("Remove “backend” from DCTerminal?");
     confirm.mockRestore();
   });
+
+  it("says repos inside the startup folder are found by themselves (W1)", async () => {
+    render(<ReposSettings />);
+    await screen.findByRole("list", { name: "Your repos" });
+    expect(
+      screen.getByText(
+        "Repos inside your startup folder are found automatically; add one here only to change its check or add verify steps.",
+      ),
+    ).toBeTruthy();
+  });
 });

@@ -5,13 +5,15 @@
  * until the lanes they depend on are approved (the run actor starts them on
  * an engine-2 run, or Start in the overview). A task that names a repo
  * from Settings › Repos (L1) gets its worktree in that repo; the others in
- * the run's own.
+ * the run's own. W1: in a workspace folder of repos (not a git repo itself)
+ * the run's repos include the ones found there, every lane names its repo,
+ * and a plan of one pull request fans out into one lane.
  */
 import {
   type PlannedTask,
   gitRepoInfo,
   getPipelineRun,
-  getReposSettings,
+  workspaceReposFor,
   getTab,
   handoffGet,
   handoffList,
@@ -35,6 +37,7 @@ import type { RoleName } from "../handoff/transitions";
 import type { PipelineDef, StageDef } from "./defs";
 import { laneBranch, laneNote, lanesFromReply, lanesFromTasks } from "./prPlan";
 import { laneFolders } from "./repos";
+import { minFanOutLanes } from "./workspace";
 
 export {
   laneBranch,
@@ -89,15 +92,20 @@ export async function fanOutRun(
   deps: FanOutDeps,
 ): Promise<{ started: string[]; waiting: string[] }> {
   const { run, stage, source, sourceChain, tasks } = args;
-  const lanes = tasks ? lanesFromTasks(tasks) : lanesFromReply(source.latestMessage);
-  if (lanes.length < 2) {
+  // W1: one pull request is enough in a workspace folder of repos.
+  const planned = tasks ? lanesFromTasks(tasks, 1) : lanesFromReply(source.latestMessage, 1);
+  // L1: a lane whose task names a repo gets its worktree in that repo's
+  // folder; the others in the run's own. The run's repos are read only when
+  // a lane names one (or the plan has one lane, which needs a workspace),
+  // and a repo no longer there stops fan-out before git. W1: they are
+  // Settings › Repos merged with the repos of a workspace folder.
+  const read = planned.some((lane) => lane.repo) || planned.length === 1;
+  const found = read ? await workspaceReposFor(run.cwd) : { workspace: false, repos: [] };
+  const lanes = planned.length >= minFanOutLanes(found.workspace) ? planned : [];
+  if (!lanes.length) {
     throw new Error("The plan lists fewer than two pull requests (manual steps do not count).");
   }
-  // L1: a lane whose task names a repo gets its worktree in that repo's
-  // folder; the others in the run's own. Settings are read only when a
-  // lane names one, and a repo no longer there stops fan-out before git.
-  const repos = lanes.some((lane) => lane.repo) ? await getReposSettings() : [];
-  const placed = laneFolders(lanes, repos, run.cwd);
+  const placed = laneFolders(lanes, found.repos, run.cwd, found.workspace);
   if ("error" in placed) throw new Error(placed.error);
   const folderOf = new Map(placed.folders.map((item) => [item.laneId, item]));
   for (const item of placed.folders.filter((f, i, all) => all.findIndex((o) => o.folder === f.folder) === i)) {

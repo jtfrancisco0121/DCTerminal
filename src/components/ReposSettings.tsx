@@ -107,6 +107,10 @@ export function ReposSettings() {
         pipeline&apos;s check command in that repo&apos;s lanes; its verify steps make the run wait for
         you to mark them verified once the check passes.
       </p>
+      <p className="hint">
+        Repos inside your startup folder are found automatically; add one here only to change its
+        check or add verify steps.
+      </p>
       {repos.length === 0 ? (
         <p className="hint">No repos yet.</p>
       ) : (

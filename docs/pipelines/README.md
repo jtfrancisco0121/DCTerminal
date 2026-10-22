@@ -1,4 +1,18 @@
+### Repos: Settings › Repos and workspace folders (L1, L2, W1)
 
+A plan can span several git repos. Each task of the Planner's plan may name a `repo`, and fan-out makes that task's worktree in the repo's folder.
+
+- **Workspace folders (W1).** When a run's startup folder is not inside a git repo, DCTerminal looks at its direct child folders for repos: a child with a `.git` (a folder, or a file in a linked worktree) that is the top of its own work tree. Hidden folders are skipped, a repo nested deeper is not found, and at most 50 child folders are looked at. Each repo found is named after its folder (`koneksi-backend`; characters other than letters, digits, `-` and `_` become `-`). The start screen says so in one line: "Workspace: 3 repos found (koneksi-backend, koneksi-engine, …)". A folder with no child repos is a plain folder, as before.
+- **Detected checks (W1).** A repo found in a workspace with no check of its own is checked by: `go test ./...` when it has `go.mod` at its root, else `cd server && go test ./...` when it has `server/go.mod`, else the `auto` gate's command (`npm run check`, `cargo test`, `npm test`). With none of these, the stage's own gates run. The check's result is labelled with the repo: `koneksi-backend check: cd server && go test ./...`.
+- **Settings › Repos is an override.** An entry whose folder is in the same repo as one found in the workspace takes its place, keeping its name, check and verify steps (with no check of its own, it gets the detected one). Entries outside the workspace stay in the list. A repo found in the workspace whose name a Settings entry already uses for another folder is left out. A repo's `check` replaces the stage's command gates in that repo's lanes, and its `verify` steps make the run wait for you once the check passes (L2).
+- **One list everywhere.** The run's repos (Settings › Repos merged with the workspace's) are what the Planner's and Triage's instructions list, what `repos.json` in the run folder holds (with `"workspace": true` for a workspace run), what fan-out makes worktrees in, and what each lane's checks come from. A run started inside a git repo gets Settings › Repos unchanged.
+- **Every pull request names its repo in a workspace.** A workspace has no home repo, so the plan check sends a plan back when a task that opens a pull request leaves `repo` out (manual steps need none), listing the valid names so Claude fixes it in the same turn. Triage's round check does the same for an active plan with no `repos`.
+
+### Fan-out
+
+A plan of two or more pull requests (manual steps do not count) fans out from the chain overview: **Fan out into N Implementers** gives each pull request a lane with its own Implementer in its own git worktree (`<repo>-worktrees/<run>-<pr>`), then its own PR Reviewer. A lane whose task names a repo gets its worktree in that repo; the others in the run's own folder. A pull request that depends on another waits until that one is approved.
+
+- **In a workspace (W1)**, every lane is in its repo, and a plan with one pull request fans out too, into one lane. On autopilot, your **Send** to the Implementer at its checkpoint does this by itself: it makes the worktree in the task's repo, records the lane and opens the Implementer there. **Send** on a workspace plan of two or more pull requests asks you to fan out from the overview instead. An Implementer never starts in the workspace folder itself.
 
 ### QA rounds: the merge queue (R3)
 
