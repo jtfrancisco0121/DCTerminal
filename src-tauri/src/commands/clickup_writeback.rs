@@ -21,8 +21,8 @@ use super::clickup_intake::{access, lock, now_text, read_snapshot, window_accoun
 use crate::bridge::folder::{self, RunPrs, TASKS_FILE, WRITEBACK_FILE};
 use crate::clickup::intake::TicketsSnapshot;
 use crate::clickup::writeback::{
-    self, LaneFacts, PrLink, Proposal, RowEdit, RunFacts, SendReport, VerifyFacts, Writeback,
-    WRITEBACK_SCHEMA,
+    self, LaneFacts, PrLink, Proposal, RowEdit, RowStore, RunFacts, SendReport, SendRequest,
+    VerifyFacts, Writeback, WRITEBACK_SCHEMA,
 };
 use crate::clickup::{valid_id, ClickUp};
 use crate::commands::chain_events::ChainEvents;
@@ -77,6 +77,8 @@ pub struct WritebackSent {
     pub view: WritebackView,
     pub sent: usize,
     pub failed: usize,
+    /// Rows you ticked that were not sent, with why.
+    pub not_sent: Vec<NotSent>,
 }
 
 /// One status of a list, to pick from.
@@ -257,7 +259,13 @@ fn view_of(
         run_id: wb.run_id,
         account_name: account_name(settings, &account_id),
         account_id,
-        proposals: wb.proposals,
+        // Only the run's own tickets are shown: a row written into the file
+        // for any other id is never offered.
+        proposals: wb
+            .proposals
+            .into_iter()
+            .filter(|p| snapshot.tickets.iter().any(|t| t.row.id == p.ticket.id))
+            .collect(),
         lists,
     })
 }
@@ -303,7 +311,8 @@ pub(crate) fn load(
     view_of(settings, state, &snapshot, wb).map(Some)
 }
 
-/// Ticks, skips or edits one row.
+/// Ticks, skips or edits one row. Refused while a send is under way,
+/// checked with the file held so a send cannot start in between.
 pub(crate) fn edit(
     settings: &Mutex<SettingsStore>,
     state: &WritebackState,
@@ -314,11 +323,14 @@ pub(crate) fn edit(
 ) -> Result<WritebackView, String> {
     let (run_dir, snapshot) =
         read_snapshot(runs_root, run_id)?.ok_or("This run did not start from ClickUp tickets.")?;
-    if lock(&state.sending)?.contains(run_id) {
-        return Err("The ClickUp updates are being sent. Wait for that to finish.".into());
+    if !snapshot.tickets.iter().any(|t| t.row.id == ticket_id) {
+        return Err("That ticket is not in this run's tickets.json.".into());
     }
     let wb = {
         let _file = lock(&state.file)?;
+        if lock(&state.sending)?.contains(run_id) {
+            return Err("The ClickUp updates are being sent. Wait for that to finish.".into());
+        }
         let mut wb = read_writeback(&run_dir)?.ok_or("This run has no ClickUp updates yet.")?;
         writeback::apply_edit(&mut wb, ticket_id, change)?;
         write_writeback(&run_dir, &wb)?;
@@ -346,19 +358,37 @@ fn claim_send<'a>(state: &'a WritebackState, run_id: &str) -> Result<Sending<'a>
     Ok(Sending { state, run_id: run_id.to_string() })
 }
 
+/// The run's `writeback.json` as a send reads and saves it: each step
+/// takes the file lock, reads, writes when asked, then lets go.
+struct FileRows<'a> {
+    state: &'a WritebackState,
+    run_dir: &'a Path,
+}
+
+impl RowStore for FileRows<'_> {
+    fn with(&mut self, f: &mut dyn FnMut(&mut Writeback) -> bool) -> Result<(), String> {
+        let _file = lock(&self.state.file)?;
+        let mut wb = read_writeback(self.run_dir)?.ok_or("This run has no ClickUp updates yet.")?;
+        if f(&mut wb) {
+            write_writeback(self.run_dir, &wb)?;
+        }
+        Ok(())
+    }
+}
+
+/// One ticked row that was not sent, and why. No call was made for it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotSent {
+    pub ticket_id: String,
+    pub reason: String,
+}
+
 /// The Timeline lines for one send.
-fn timeline_lines(wb: &Writeback, report: &SendReport) -> Vec<(String, Option<String>)> {
+fn timeline_lines(report: &SendReport) -> Vec<(String, Option<String>)> {
     let mut lines = Vec::new();
     if !report.sent.is_empty() {
-        let parts: Vec<String> = report
-            .sent
-            .iter()
-            .filter_map(|id| wb.proposals.iter().find(|p| &p.ticket.id == id))
-            .map(|p| match &p.status {
-                Some(status) => format!("{} (comment, status {status})", p.ticket.id),
-                None => format!("{} (comment)", p.ticket.id),
-            })
-            .collect();
+        let parts: Vec<String> = report.sent.iter().map(|(id, what)| format!("{id} ({what})")).collect();
         let count = report.sent.len();
         lines.push((
             format!(
@@ -375,10 +405,12 @@ fn timeline_lines(wb: &Writeback, report: &SendReport) -> Vec<(String, Option<St
     lines
 }
 
-/// Send: posts the ticked rows with the account and workspace the tickets
-/// were taken with, records each result in `writeback.json` and on the
-/// Timeline. `window_account_id` is the Claude account of the window that
-/// asked; another account's window is refused before any call.
+/// Send: posts the rows you ticked, as you saw them (`requests`), with the
+/// account and workspace the tickets were taken with. A row goes only when
+/// `writeback.json` still says exactly what you saw and its ticket is in
+/// `tickets.json`; its result is saved before the next row is sent, and
+/// noted on the Timeline. `window_account_id` is the Claude account of the
+/// window that asked; another account's window is refused before any call.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn send(
     deps: &Deps,
@@ -388,6 +420,7 @@ pub(crate) fn send(
     runs_root: &Path,
     run_id: &str,
     window_account_id: &str,
+    requests: &[SendRequest],
 ) -> Result<WritebackSent, String> {
     let (run_dir, snapshot) =
         read_snapshot(runs_root, run_id)?.ok_or("This run did not start from ClickUp tickets.")?;
@@ -398,6 +431,9 @@ pub(crate) fn send(
             account_name(deps.settings, &source.account_id)
         ));
     }
+    if requests.is_empty() {
+        return Err("Tick at least one update to send. Nothing is sent without a tick.".into());
+    }
     let (token, workspace) = access(deps, &source.account_id)?;
     if workspace != source.workspace_id {
         return Err(format!(
@@ -405,33 +441,44 @@ pub(crate) fn send(
             account_name(deps.settings, &source.account_id)
         ));
     }
-    let _sending = claim_send(state, run_id)?;
-    let mut wb = {
-        let _file = lock(&state.file)?;
-        read_writeback(&run_dir)?.ok_or("This run has no ClickUp updates yet.")?
-    };
-    if writeback::to_send(&wb).is_empty() {
-        return Err("Tick at least one update to send. Nothing is sent without a tick.".into());
-    }
+    let tickets: HashSet<String> = snapshot.tickets.iter().map(|t| t.row.id.clone()).collect();
+    let sending = claim_send(state, run_id)?;
     let client = ClickUp::with(deps.transport, &token, deps.gate, deps.clock);
-    let report = writeback::send_ticked(&client, &mut wb, &now_text());
-    {
-        let _file = lock(&state.file)?;
-        write_writeback(&run_dir, &wb)?;
-    }
+    let mut rows = FileRows { state, run_dir: &run_dir };
+    let (report, saved) = match writeback::send_requests(&client, &mut rows, &tickets, requests, &now_text) {
+        Ok(report) => (report, Ok(())),
+        Err((report, err)) => (report, Err(err)),
+    };
+    // The Timeline gets what was sent even when a save failed.
     {
         let mut store = lock(store)?;
         if store.pipeline_run_by_id(run_id).is_some() {
-            for (summary, detail) in timeline_lines(&wb, &report) {
-                crate::commands::pipeline::note(&mut store, run_id, None, &summary, detail, false, None)?;
+            for (summary, detail) in timeline_lines(&report) {
+                if let Err(err) = crate::commands::pipeline::note(&mut store, run_id, None, &summary, detail, false, None) {
+                    eprintln!("DCTerminal: run {run_id}: a ClickUp send was not noted: {err}");
+                }
             }
         }
     }
     events.chain_run_updated(run_id);
-    drop(_sending);
+    drop(sending);
+    if let Err(err) = saved {
+        return Err(format!(
+            "Could not save the ClickUp results ({err}), so sending stopped. Check the tickets in ClickUp before sending again."
+        ));
+    }
+    let wb = {
+        let _file = lock(&state.file)?;
+        read_writeback(&run_dir)?.ok_or("This run has no ClickUp updates yet.")?
+    };
     Ok(WritebackSent {
         sent: report.sent.len(),
         failed: report.failed.len(),
+        not_sent: report
+            .not_sent
+            .iter()
+            .map(|(id, reason)| NotSent { ticket_id: id.clone(), reason: reason.clone() })
+            .collect(),
         view: view_of(deps.settings, state, &snapshot, wb)?,
     })
 }
@@ -563,6 +610,7 @@ pub async fn clickup_writeback_send(
     app: AppHandle,
     window_id: String,
     run_id: String,
+    rows: Vec<SendRequest>,
 ) -> Result<WritebackSent, String> {
     let account = window_account(app.state::<Mutex<StateStore>>().inner(), &window_id)?;
     let runs = runs_root(&app);
@@ -576,6 +624,7 @@ pub async fn clickup_writeback_send(
             &runs,
             run_id.trim(),
             &account,
+            &rows,
         )
     })
     .await

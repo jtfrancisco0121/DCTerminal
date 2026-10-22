@@ -170,8 +170,14 @@ impl Env {
         edit(&self.settings, &self.state, &self.runs(), RUN, ticket, &RowEdit { ticked: Some(true), ..Default::default() }).unwrap()
     }
 
+    /// Send ticked, as the overview asks it: the rows it shows ticked, as shown.
     fn send(&self, api: &Recorded, window_account: &str) -> Result<WritebackSent, String> {
-        send(&self.deps(api), &self.state, &self.store, &Events::default(), &self.runs(), RUN, window_account)
+        let shown = self.load().map(|v| v.proposals).unwrap_or_default();
+        self.send_rows(api, window_account, &shown_ticked(&shown))
+    }
+
+    fn send_rows(&self, api: &Recorded, window_account: &str, rows: &[SendRequest]) -> Result<WritebackSent, String> {
+        send(&self.deps(api), &self.state, &self.store, &Events::default(), &self.runs(), RUN, window_account, rows)
     }
 
     fn saved(&self) -> Writeback {
@@ -194,6 +200,14 @@ impl Env {
         }
         out
     }
+}
+
+/// What the overview sends for the rows it shows ticked.
+fn shown_ticked(rows: &[Proposal]) -> Vec<SendRequest> {
+    rows.iter()
+        .filter(|p| p.ticked && !p.skipped)
+        .map(|p| SendRequest { ticket_id: p.ticket.id.clone(), comment: p.comment.clone(), status: p.status.clone() })
+        .collect()
 }
 
 #[test]
@@ -334,7 +348,8 @@ fn send_posts_only_ticked_rows_with_the_run_s_account_and_records_them() {
         .on("PUT /task/86b1aa002", ok("{}".into()))
         .on("POST /task/86b1aa002/comment", ok(r#"{"id":"90"}"#.into()));
     let events = Events::default();
-    let sent = send(&env.deps(&api), &env.state, &env.store, &events, &env.runs(), RUN, "default").unwrap();
+    let rows = shown_ticked(&env.load().unwrap().proposals);
+    let sent = send(&env.deps(&api), &env.state, &env.store, &events, &env.runs(), RUN, "default", &rows).unwrap();
     assert_eq!((sent.sent, sent.failed), (1, 0));
     let writes = api.writes.lock().unwrap().clone();
     assert_eq!(writes.iter().map(|w| (w.method, w.path.as_str())).collect::<Vec<_>>(), [("PUT", "/task/86b1aa002"), ("POST", "/task/86b1aa002/comment")]);
@@ -451,4 +466,83 @@ fn no_token_reaches_writeback_json_a_reply_or_an_error() {
         }
     }
     assert!(api.calls.lock().unwrap().iter().all(|(path, auth)| auth == WORK_TOKEN && !path.contains("pk_")));
+}
+
+#[test]
+fn a_ticked_row_injected_into_writeback_json_for_a_foreign_id_is_never_sent_or_shown() {
+    let env = env_with_tickets("inject");
+    env.map_list();
+    env.verify(true);
+    env.load().unwrap();
+    // A stage writes a ticked row for a ticket that is not in tickets.json.
+    let mut wb = env.saved();
+    let mut foreign = wb.proposals[0].clone();
+    foreign.ticket.id = "86b1evil9".into();
+    foreign.ticked = true;
+    wb.proposals.push(foreign.clone());
+    write_writeback(&env.run_dir(), &wb).unwrap();
+    assert!(env.load().unwrap().proposals.iter().all(|p| p.ticket.id != "86b1evil9"), "not offered");
+    let api = Recorded::default();
+    let asked = SendRequest { ticket_id: foreign.ticket.id.clone(), comment: foreign.comment.clone(), status: foreign.status.clone() };
+    let sent = env.send_rows(&api, "default", &[asked]).unwrap();
+    assert_eq!((sent.sent, sent.failed), (0, 0));
+    assert!(sent.not_sent[0].reason.contains("not in the run's tickets.json"), "{:?}", sent.not_sent);
+    // A tick written straight into the file for a real ticket sends nothing either.
+    let mut wb = env.saved();
+    wb.proposals[0].ticked = true;
+    write_writeback(&env.run_dir(), &wb).unwrap();
+    assert!(env.send_rows(&api, "default", &[]).is_err());
+    // An edit for the foreign id is refused too.
+    let err = edit(&env.settings, &env.state, &env.runs(), RUN, "86b1evil9", &RowEdit { ticked: Some(true), ..Default::default() }).unwrap_err();
+    assert!(err.contains("not in this run's tickets.json"), "{err}");
+    assert!(api.calls.lock().unwrap().is_empty() && api.writes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_send_that_dies_after_row_1_of_3_leaves_row_1_recorded_and_a_later_send_does_not_repeat_it() {
+    let env = env("crash");
+    std::fs::create_dir_all(env.run_dir()).unwrap();
+    let snap = snapshot(vec![ticket("t1", None, Some(LIST)), ticket("t2", None, Some(LIST)), ticket("t3", None, Some(LIST))]);
+    folder::write_json(&env.run_dir().join(TICKETS_FILE), &snap).unwrap();
+    env.with_prs();
+    env.verify(true);
+    env.load().unwrap();
+    for id in ["t1", "t2", "t3"] {
+        env.tick(id);
+    }
+    // Row 2 has no recorded reply: the transport panics, as a quit mid-send would stop it.
+    let api = Recorded::default().on("POST /task/t1/comment", ok("{}".into()));
+    let rows = shown_ticked(&env.load().unwrap().proposals);
+    let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| env.send_rows(&api, "default", &rows)));
+    assert!(died.is_err());
+    let saved = env.saved();
+    assert!(saved.proposals[0].sent.is_some() && !saved.proposals[0].ticked, "row 1 was saved as soon as it went");
+    assert!(saved.proposals[1].sent.is_none() && saved.proposals[2].sent.is_none());
+    assert!(!env.load().unwrap().sending, "the send is not left claimed");
+    // The next send posts rows 2 and 3 only.
+    let api = Recorded::default()
+        .on("POST /task/t2/comment", ok("{}".into()))
+        .on("POST /task/t3/comment", ok("{}".into()));
+    let again = env.send(&api, "default").unwrap();
+    assert_eq!(again.sent, 2);
+    let paths: Vec<String> = api.writes.lock().unwrap().iter().map(|w| w.path.clone()).collect();
+    assert_eq!(paths, ["/task/t2/comment", "/task/t3/comment"]);
+}
+
+#[test]
+fn a_row_changed_since_you_ticked_it_is_reported_and_not_sent() {
+    let env = env_with_tickets("changed");
+    env.verify(true);
+    env.load().unwrap();
+    env.tick("86b1aa001");
+    let seen = shown_ticked(&env.load().unwrap().proposals);
+    // A mapping arrives: the rebuild adds a status and unticks the row.
+    env.map_list();
+    let after = env.load().unwrap();
+    assert_eq!(after.proposals[0].status.as_deref(), Some("QA PASSED"));
+    assert!(!after.proposals[0].ticked);
+    let api = Recorded::default();
+    let sent = env.send_rows(&api, "default", &seen).unwrap();
+    assert_eq!(sent.not_sent, [NotSent { ticket_id: "86b1aa001".into(), reason: writeback::CHANGED_SINCE_TICK.into() }]);
+    assert!(api.writes.lock().unwrap().is_empty());
 }

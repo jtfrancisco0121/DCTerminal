@@ -10,6 +10,8 @@ vi.mock("../bridge", () => ({
   clickupListStatuses: vi.fn(),
   clickupStatusMapSet: vi.fn(),
 }));
+const { confirmMock } = vi.hoisted(() => ({ confirmMock: vi.fn(async (_options: unknown) => true) }));
+vi.mock("./confirm", () => ({ useConfirm: () => confirmMock }));
 
 import {
   clickupListStatuses,
@@ -18,7 +20,7 @@ import {
   clickupWritebackLoad,
   clickupWritebackSend,
 } from "../bridge";
-import { ClickUpUpdates, rowsToSend, sendResultText, sentAsIs } from "./ClickUpUpdates";
+import { ClickUpUpdates, rowsToSend, sendResultText, sendRows, sentAsIs } from "./ClickUpUpdates";
 
 const LIST = { id: "901800112233", name: "QA 1.2.8" };
 
@@ -96,6 +98,7 @@ describe("ClickUp updates on the chain overview (C3)", () => {
       ]),
       sent: 1,
       failed: 0,
+      notSent: [],
     });
     render(<ClickUpUpdates runId="ee_1" refreshKey="a" />);
     await screen.findByRole("region", { name: "ClickUp updates" });
@@ -103,7 +106,11 @@ describe("ClickUp updates on the chain overview (C3)", () => {
     await waitFor(() => expect(clickupWritebackEdit).toHaveBeenCalledWith("ee_1", "t1", { ticked: true }));
     const send = await screen.findByRole("button", { name: "Send ticked (1)" });
     fireEvent.click(send);
-    await waitFor(() => expect(clickupWritebackSend).toHaveBeenCalledWith("ee_1"));
+    await waitFor(() =>
+      expect(clickupWritebackSend).toHaveBeenCalledWith("ee_1", [
+        { ticketId: "t1", comment: "Update from DCTerminal for t1.", status: "QA PASSED" },
+      ]),
+    );
     expect(await screen.findByText("Sent 1 update.")).toBeTruthy();
     expect(within(row("t1")).getByText(/Sent .*status QA PASSED/)).toBeTruthy();
     // Sent and unchanged: it cannot be ticked again until you edit it.
@@ -158,11 +165,55 @@ describe("ClickUp updates on the chain overview (C3)", () => {
     await waitFor(() => expect(clickupWritebackLoad).toHaveBeenCalledTimes(2));
   });
 
+  it("a row that may have been posted asks you to confirm before it is ticked again", async () => {
+    vi.mocked(clickupWritebackLoad).mockResolvedValue(
+      view([proposal("t1", { sentMaybe: true, error: "ClickUp did not answer in time, so it may have posted the comment anyway." })]),
+    );
+    vi.mocked(clickupWritebackEdit).mockResolvedValue(view([proposal("t1", { ticked: true })]));
+    render(<ClickUpUpdates runId="ee_1" refreshKey="a" />);
+    expect(await screen.findByText(/May have been posted: check the ticket/)).toBeTruthy();
+    confirmMock.mockResolvedValueOnce(false);
+    fireEvent.click(within(row("t1")).getByRole("checkbox"));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+    expect(clickupWritebackEdit).not.toHaveBeenCalled();
+    confirmMock.mockResolvedValueOnce(true);
+    fireEvent.click(within(row("t1")).getByRole("checkbox"));
+    await waitFor(() =>
+      expect(clickupWritebackEdit).toHaveBeenCalledWith("ee_1", "t1", { ticked: true, confirmResend: true }),
+    );
+  });
+
+  it("says which ticked rows were not sent because they changed, and marks follow-ups", async () => {
+    vi.mocked(clickupWritebackLoad).mockResolvedValue(view([proposal("t1", { ticked: true, followUp: true })]));
+    vi.mocked(clickupWritebackSend).mockResolvedValue({
+      view: view([proposal("t1", { followUp: true })]),
+      sent: 0,
+      failed: 0,
+      notSent: [{ ticketId: "t1", reason: "Changed since you ticked it. Review it and tick it again." }],
+    });
+    render(<ClickUpUpdates runId="ee_1" refreshKey="a" />);
+    expect(await screen.findByText(/Follow-up/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Send ticked (1)" }));
+    expect(
+      await screen.findByText("Sent 0 updates. t1 not sent: Changed since you ticked it. Review it and tick it again."),
+    ).toBeTruthy();
+  });
+
   it("counts rows to send and says results in words", () => {
     const sent = proposal("t1", { ticked: true, sent: { at: "t", comment: "Update from DCTerminal for t1.", status: "QA PASSED" } });
     expect(sentAsIs(sent)).toBe(true);
     expect(sentAsIs({ ...sent, comment: "Edited." })).toBe(false);
-    expect(rowsToSend([sent, proposal("t2", { ticked: true }), proposal("t3", { ticked: true, skipped: true }), proposal("t4")]).map((p) => p.ticket.id)).toEqual(["t2"]);
+    const rows = [
+      sent,
+      proposal("t2", { ticked: true }),
+      proposal("t3", { ticked: true, skipped: true }),
+      proposal("t4"),
+      proposal("t5", { ticked: true, sentMaybe: true }),
+    ];
+    expect(rowsToSend(rows).map((p) => p.ticket.id)).toEqual(["t2"]);
+    expect(sendRows(rows)).toEqual([{ ticketId: "t2", comment: "Update from DCTerminal for t2.", status: "QA PASSED" }]);
+    // A status-only send recorded no comment: the row is not sent as it is.
+    expect(sentAsIs({ ...sent, sent: { at: "t", status: "QA PASSED" } })).toBe(false);
     expect(sendResultText(2, 0)).toBe("Sent 2 updates.");
     expect(sendResultText(1, 1)).toBe("Sent 1 update. 1 failed: see its row.");
     expect(sendResultText(0, 2)).toBe("Sent 0 updates. 2 failed: see their rows.");

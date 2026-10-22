@@ -8,8 +8,10 @@ import {
   type ClickUpListStatus,
   type ClickUpProposal,
   type ClickUpRowEdit,
+  type ClickUpSendRow,
   type ClickUpWritebackView,
 } from "../bridge";
+import { useConfirm } from "./confirm";
 import { errorText, InlineNotice } from "./InlineNotice";
 
 type Props = {
@@ -20,19 +22,25 @@ type Props = {
 
 /** A row already sent, unchanged since: sending it again would repeat it (C3). */
 export function sentAsIs(p: ClickUpProposal): boolean {
-  return !!p.sent && p.sent.comment === p.comment && (p.sent.status ?? null) === (p.status ?? null);
+  return !!p.sent && p.sent.comment === p.comment && (p.status == null || p.sent.status === p.status);
 }
 
 /** The rows Send ticked would post: ticked, not skipped, not already sent as they are. */
 export function rowsToSend(proposals: ClickUpProposal[]): ClickUpProposal[] {
-  return proposals.filter((p) => p.ticked && !p.skipped && !sentAsIs(p));
+  return proposals.filter((p) => p.ticked && !p.skipped && !p.sentMaybe && !sentAsIs(p));
 }
 
-/** "Sent 2 updates." / "Sent 1 update. 1 failed: see its row." */
-export function sendResultText(sent: number, failed: number): string {
-  const sentText = `Sent ${sent} update${sent === 1 ? "" : "s"}.`;
-  if (failed === 0) return sentText;
-  return `${sentText} ${failed} failed: see ${failed === 1 ? "its row" : "their rows"}.`;
+/** What Send carries for each row: exactly what you see, so a row that changed since is not sent. */
+export function sendRows(proposals: ClickUpProposal[]): ClickUpSendRow[] {
+  return rowsToSend(proposals).map((p) => ({ ticketId: p.ticket.id, comment: p.comment, status: p.status ?? null }));
+}
+
+/** "Sent 2 updates." / "Sent 1 update. 1 failed: see its row." / "… 1 not sent: …" */
+export function sendResultText(sent: number, failed: number, notSent: { ticketId: string; reason: string }[] = []): string {
+  const parts = [`Sent ${sent} update${sent === 1 ? "" : "s"}.`];
+  if (failed > 0) parts.push(`${failed} failed: see ${failed === 1 ? "its row" : "their rows"}.`);
+  for (const row of notSent) parts.push(`${row.ticketId} not sent: ${row.reason}`);
+  return parts.join(" ");
 }
 
 function when(at: string): string {
@@ -52,6 +60,7 @@ type ListStatuses = { statuses: ClickUpListStatus[] } | { error: string };
  * run with no tickets.json or nothing due yet.
  */
 export function ClickUpUpdates({ runId, refreshKey }: Props) {
+  const confirm = useConfirm();
   const [view, setView] = useState<ClickUpWritebackView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -121,15 +130,37 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
     return draft !== undefined && draft.trim() !== p.comment ? draft : undefined;
   };
 
+  // The latest view, for a Send queued behind a comment saved on blur.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  const tick = async (p: ClickUpProposal, ticked: boolean) => {
+    const comment = pendingComment(p);
+    const change: ClickUpRowEdit = { ticked, ...(comment !== undefined ? { comment } : {}) };
+    if (ticked && p.sentMaybe) {
+      const ok = await confirm({
+        title: "Send this update again?",
+        message:
+          "Its last send timed out, so ClickUp may have posted the comment anyway. Check the ticket in ClickUp first, so it is not posted twice.",
+        confirmLabel: "Send again",
+      });
+      if (!ok) return;
+      change.confirmResend = true;
+    }
+    await edit(p.ticket.id, change);
+  };
+
   const send = () =>
     serial(async () => {
+      const rows = sendRows(viewRef.current?.proposals ?? []);
+      if (rows.length === 0) return;
       setBusy(true);
       setError(null);
       setNotice(null);
       try {
-        const result = await clickupWritebackSend(runId);
+        const result = await clickupWritebackSend(runId, rows);
         setView(result.view);
-        setNotice(sendResultText(result.sent, result.failed));
+        setNotice(sendResultText(result.sent, result.failed, result.notSent));
       } catch (err) {
         setError(errorText(err));
       } finally {
@@ -218,10 +249,7 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
                     checked={p.ticked && !p.skipped}
                     disabled={locked || !!p.skipped || (alreadySent && !p.ticked)}
                     title={alreadySent ? "Already sent. Edit the comment or status to send it again." : undefined}
-                    onChange={(event) => {
-                      const comment = pendingComment(p);
-                      void edit(id, { ticked: event.target.checked, ...(comment !== undefined ? { comment } : {}) });
-                    }}
+                    onChange={(event) => void tick(p, event.target.checked)}
                   />
                   Send
                 </label>
@@ -229,13 +257,16 @@ export function ClickUpUpdates({ runId, refreshKey }: Props) {
                   <code>{name}</code>
                 </a>{" "}
                 <span>{p.ticket.title}</span>
+                {p.followUp && <span className="hint"> · Follow-up</span>}
                 {p.sent && (
                   <span className="hint">
                     {" "}
                     · Sent {when(p.sent.at)}
+                    {p.sent.comment ? "" : ", status only"}
                     {p.sent.status ? `, status ${p.sent.status}` : ""}
                   </span>
                 )}
+                {p.sentMaybe && <span className="hint"> · May have been posted: check the ticket</span>}
                 <button
                   type="button"
                   className="secondary-button"

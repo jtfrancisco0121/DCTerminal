@@ -1313,7 +1313,8 @@ export function clickupIntakePull(runId: string, ticketIds: string[]): Promise<C
 export type ClickUpTicketList = { id: string; name: string };
 
 /** C3: what was sent for a write-back row, and when. */
-export type ClickUpSent = { at: string; comment: string; status?: string };
+/** What ClickUp has from the row: the last comment posted (none when only a status went) and the last status set. */
+export type ClickUpSent = { at: string; comment?: string; status?: string };
 
 /** C3: one ticket's proposed ClickUp update. Never sent without `ticked`. */
 export type ClickUpProposal = {
@@ -1330,7 +1331,11 @@ export type ClickUpProposal = {
   edited: boolean;
   statusEdited?: boolean;
   skipped?: boolean;
+  /** A follow-up to an update already sent: a later verification added to it. */
+  followUp?: boolean;
   sent?: ClickUpSent;
+  /** The last comment POST timed out, so ClickUp may have it; ticking again needs `confirmResend`. */
+  sentMaybe?: boolean;
   /** The last send's plain-English error. */
   error?: string;
 };
@@ -1356,9 +1361,20 @@ export type ClickUpRowEdit = {
   status?: string | null;
   ticked?: boolean;
   skipped?: boolean;
+  /** You checked the ticket after a timed-out send and want it sent again. */
+  confirmResend?: boolean;
 };
 
-export type ClickUpWritebackSent = { view: ClickUpWritebackView; sent: number; failed: number };
+/** C3: one row you ticked, as you saw it. The backend sends it only if writeback.json still says exactly this. */
+export type ClickUpSendRow = { ticketId: string; comment: string; status: string | null };
+
+export type ClickUpWritebackSent = {
+  view: ClickUpWritebackView;
+  sent: number;
+  failed: number;
+  /** Ticked rows that were not sent, and why (no call was made). */
+  notSent: { ticketId: string; reason: string }[];
+};
 
 export type ClickUpListStatus = { status: string; kind: string; color?: string };
 export type ClickUpListStatuses = { id: string; name: string; statuses: ClickUpListStatus[] };
@@ -1378,9 +1394,9 @@ export function clickupWritebackEdit(
   return invoke("clickup_writeback_edit", { runId, ticketId, edit });
 }
 
-/** C3 Send ticked: posts only the ticked rows, with the account the tickets were taken with. */
-export async function clickupWritebackSend(runId: string): Promise<ClickUpWritebackSent> {
-  return invoke("clickup_writeback_send", { windowId: await windowId(), runId });
+/** C3 Send ticked: posts only `rows`, each as you saw it, with the account the tickets were taken with. */
+export async function clickupWritebackSend(runId: string, rows: ClickUpSendRow[]): Promise<ClickUpWritebackSent> {
+  return invoke("clickup_writeback_send", { windowId: await windowId(), runId, rows });
 }
 
 /** C3: a ClickUp list's real statuses, read with that account's token. */
