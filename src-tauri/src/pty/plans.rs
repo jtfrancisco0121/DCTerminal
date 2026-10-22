@@ -213,11 +213,9 @@ mod tests {
             .unwrap()
             .expect("plan");
         assert_eq!(unnamed.name, "alpha.md");
-        assert!(
-            terminal_plan(&dir, started, &[], &["alpha.md".into(), "beta.md".into()])
-                .unwrap()
-                .is_none()
-        );
+        assert!(terminal_plan(&dir, started, &[], &["alpha.md".into(), "beta.md".into()])
+            .unwrap()
+            .is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -230,9 +228,14 @@ mod tests {
         touch(&dir.join("old.md"), started - Duration::from_secs(60));
         touch(&dir.join("other.md"), started + Duration::from_secs(60));
         // The last mention wins; an unknown name is skipped.
-        let found = terminal_plan(&dir, started, &["old.md".into(), "missing.md".into()], &[])
-            .unwrap()
-            .expect("plan");
+        let found = terminal_plan(
+            &dir,
+            started,
+            &["old.md".into(), "missing.md".into()],
+            &[],
+        )
+        .unwrap()
+        .expect("plan");
         assert_eq!(found.name, "old.md");
         // Edited after a hand-off: the next read returns the new text.
         fs::write(dir.join("old.md"), "second").unwrap();
@@ -251,16 +254,12 @@ mod tests {
         body.push('é');
         body.push_str("tail");
         fs::write(&path, &body).unwrap();
-        let found = terminal_plan(&dir, UNIX_EPOCH, &[], &[])
-            .unwrap()
-            .expect("plan");
+        let found = terminal_plan(&dir, UNIX_EPOCH, &[], &[]).unwrap().expect("plan");
         assert!(found.truncated);
         assert_eq!(found.text.len(), MAX_PLAN_BYTES as usize - 1);
         assert!(!found.text.contains('\u{fffd}'));
         fs::write(&path, "small").unwrap();
-        let small = terminal_plan(&dir, UNIX_EPOCH, &[], &[])
-            .unwrap()
-            .expect("plan");
+        let small = terminal_plan(&dir, UNIX_EPOCH, &[], &[]).unwrap().expect("plan");
         assert!(!small.truncated);
         let _ = fs::remove_dir_all(&dir);
     }

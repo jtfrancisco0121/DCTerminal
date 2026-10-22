@@ -76,10 +76,7 @@ mod tests {
 
         // What the UI sends back deserialises to the same id.
         assert_eq!(serde_json::from_value::<RequestId>(json!(7)).unwrap(), num);
-        assert_eq!(
-            serde_json::from_value::<RequestId>(json!("req-7")).unwrap(),
-            text
-        );
+        assert_eq!(serde_json::from_value::<RequestId>(json!("req-7")).unwrap(), text);
         // "7" the string is not 7 the number.
         assert_ne!(RequestId::from_value(&json!("7")), Some(num));
     }
@@ -87,9 +84,6 @@ mod tests {
     #[test]
     fn missing_or_null_ids_are_notifications() {
         assert_eq!(RequestId::from_message(&json!({ "method": "x" })), None);
-        assert_eq!(
-            RequestId::from_message(&json!({ "id": null, "method": "x" })),
-            None
-        );
+        assert_eq!(RequestId::from_message(&json!({ "id": null, "method": "x" })), None);
     }
 }

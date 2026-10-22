@@ -92,10 +92,7 @@ impl Host for AppHost {
 
     fn repos(&self) -> Vec<crate::store::RepoEntry> {
         let settings = self.app.state::<Mutex<SettingsStore>>();
-        let repos = settings
-            .lock()
-            .map(|settings| settings.repos().to_vec())
-            .unwrap_or_default();
+        let repos = settings.lock().map(|settings| settings.repos().to_vec()).unwrap_or_default();
         repos
     }
 
@@ -119,25 +116,15 @@ impl Host for AppHost {
 
     fn terminal_live(&self, tab_id: &str) -> bool {
         let registry = self.app.state::<Mutex<PtyRegistry>>();
-        let live = registry
-            .lock()
-            .is_ok_and(|registry| registry.running(tab_id));
+        let live = registry.lock().is_ok_and(|registry| registry.running(tab_id));
         live
     }
 
     fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult {
         match gate {
-            GateDef::Command {
-                run,
-                timeout_secs,
-                optional,
-            } => GateResult {
+            GateDef::Command { run, timeout_secs, optional } => GateResult {
                 optional: *optional,
-                ..crate::pipelines::run_command_gate(
-                    folder,
-                    run,
-                    timeout_secs.map(Duration::from_secs),
-                )
+                ..crate::pipelines::run_command_gate(folder, run, timeout_secs.map(Duration::from_secs))
             },
             GateDef::PullRequest => crate::pipelines::run_pull_request_gate(folder, pr_urls),
         }
@@ -154,10 +141,7 @@ impl Host for AppHost {
         let dir = {
             let settings = self.app.state::<Mutex<SettingsStore>>();
             let settings = settings.lock().ok()?;
-            crate::store::settings_store::resolved_account_config(
-                &settings.providers().claude,
-                &account,
-            )
+            crate::store::settings_store::resolved_account_config(&settings.providers().claude, &account)
         };
         let usage = self.app.state::<Mutex<crate::usage::UsageStore>>();
         let snapshot = usage.lock().ok()?.snapshot(&dir.path);
@@ -183,9 +167,7 @@ impl Host for AppHost {
     }
 
     fn tab_opened(&self, run_id: &str, tab_id: &str) {
-        let _ = self
-            .app
-            .emit(STAGE_OPENED_EVENT, StageOpened { run_id, tab_id });
+        let _ = self.app.emit(STAGE_OPENED_EVENT, StageOpened { run_id, tab_id });
     }
 
     fn stopped(&self, run_id: &str, tab_id: Option<&str>, reason: StopReason, summary: &str) {
@@ -201,14 +183,7 @@ impl Host for AppHost {
     }
 
     fn notice(&self, run_id: &str, title: &str, body: &str) {
-        let _ = self.app.emit(
-            PIPELINE_NOTICE_EVENT,
-            PipelineNotice {
-                run_id,
-                title,
-                body,
-            },
-        );
+        let _ = self.app.emit(PIPELINE_NOTICE_EVENT, PipelineNotice { run_id, title, body });
     }
 }
 
@@ -249,9 +224,7 @@ pub(crate) fn known_usage_percent(windows: &[crate::usage::RateWindow], now_ms: 
         .filter(|window| !stale(window, now_ms))
         .filter_map(|window| window.utilization)
         .filter(|value| value.is_finite())
-        .fold(None, |max: Option<f64>, value| {
-            Some(max.map_or(value, |m| m.max(value)))
-        })
+        .fold(None, |max: Option<f64>, value| Some(max.map_or(value, |m| m.max(value))))
         .map(|value| value.round().clamp(0.0, 255.0) as u8)
 }
 
@@ -274,12 +247,7 @@ mod tests {
     use super::known_usage_percent;
     use crate::usage::RateWindow;
 
-    fn window(
-        kind: &str,
-        utilization: Option<f64>,
-        resets_at: Option<i64>,
-        seen_at_ms: i64,
-    ) -> RateWindow {
+    fn window(kind: &str, utilization: Option<f64>, resets_at: Option<i64>, seen_at_ms: i64) -> RateWindow {
         RateWindow {
             rate_limit_type: kind.into(),
             label: kind.into(),
@@ -298,21 +266,12 @@ mod tests {
         let now = now_ms / 1000;
         let hour = 3_600_000;
         assert_eq!(known_usage_percent(&[], now_ms), None);
-        assert_eq!(
-            known_usage_percent(&[window("five_hour", None, Some(now + 60), now_ms)], now_ms),
-            None
-        );
+        assert_eq!(known_usage_percent(&[window("five_hour", None, Some(now + 60), now_ms)], now_ms), None);
         // Current: the highest window counts.
-        let current = [
-            window("five_hour", Some(42.4), Some(now + 60), now_ms),
-            window("seven_day", Some(61.6), Some(now + 600), now_ms),
-        ];
+        let current = [window("five_hour", Some(42.4), Some(now + 60), now_ms), window("seven_day", Some(61.6), Some(now + 600), now_ms)];
         assert_eq!(known_usage_percent(&current, now_ms), Some(62));
         // The window reset since the reading: its 95% no longer applies.
-        let reset = [
-            window("five_hour", Some(95.0), Some(now - 1), now_ms - hour),
-            window("seven_day", Some(30.0), Some(now + 600), now_ms),
-        ];
+        let reset = [window("five_hour", Some(95.0), Some(now - 1), now_ms - hour), window("seven_day", Some(30.0), Some(now + 600), now_ms)];
         assert_eq!(known_usage_percent(&reset, now_ms), Some(30));
         // No reset time: a reading older than its window is stale.
         let old = [window("five_hour", Some(95.0), None, now_ms - 6 * hour)];

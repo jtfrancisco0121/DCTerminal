@@ -55,10 +55,7 @@ pub fn merge_role_prompt_with(
         role_name: role.name.clone(),
     };
     builtins.apply_to_map(&mut merge_values);
-    merge_values.insert(
-        RESULT_INSTRUCTIONS_KEY.to_string(),
-        result_instructions.to_string(),
-    );
+    merge_values.insert(RESULT_INSTRUCTIONS_KEY.to_string(), result_instructions.to_string());
 
     let result = merge_template(&role.template_text, &role.fields, &merge_values);
     let mut text = prepend_loose_context(&role.template_text, &result.text, &merge_values);

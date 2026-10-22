@@ -164,10 +164,7 @@ impl WorkspaceStore {
             data = WorkspacesFile::default();
         }
         data.schema_version = WORKSPACES_SCHEMA_VERSION;
-        let mut store = Self {
-            path: path.clone(),
-            data,
-        };
+        let mut store = Self { path: path.clone(), data };
         if !store.data.migrations.claude_first {
             crate::store::claude_migration::backup_pre_claude_first(&path)?;
             for workspace in &mut store.data.workspaces {
@@ -354,9 +351,7 @@ mod tests {
         assert!(store
             .save_workspace("Empty", vec![], None, None, false, T0)
             .is_err());
-        let first = store
-            .save_workspace("Daily", one, None, None, false, T0)
-            .unwrap();
+        let first = store.save_workspace("Daily", one, None, None, false, T0).unwrap();
         let err = store
             .save_workspace("daily", two.clone(), None, None, false, T1)
             .unwrap_err();
@@ -377,14 +372,7 @@ mod tests {
         let dir = dir();
         let mut store = WorkspaceStore::open(&dir).unwrap();
         store
-            .save_workspace(
-                "Old",
-                vec![tab("A", "r", "/a", "role")],
-                None,
-                None,
-                false,
-                T0,
-            )
+            .save_workspace("Old", vec![tab("A", "r", "/a", "role")], None, None, false, T0)
             .unwrap();
         let many: Vec<_> = (0..MAX_WORKSPACE_TABS + 5)
             .map(|i| tab(&format!("T{i}"), "r", "/x", "role"))

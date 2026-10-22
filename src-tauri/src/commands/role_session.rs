@@ -199,57 +199,62 @@ pub fn role_session_start(
         &role.id,
         provider.id(),
     )?;
-    let (client, replay_notes, model_via) =
-        match connect_client(provider.clone(), &path, &mode_id, &bind, &model) {
-            Err(e) if e.starts_with("AUTH_ERROR:") || e.contains("AUTH_ERROR:") => {
-                let msg = e
-                    .split("AUTH_ERROR:")
-                    .nth(1)
-                    .unwrap_or(e.as_str())
-                    .trim()
-                    .to_string();
-                return Ok(empty_start(vec![FieldError {
-                    key: "_auth".to_string(),
-                    message: provider.auth_error_message(&msg),
-                }]));
+    let (client, replay_notes, model_via) = match connect_client(
+        provider.clone(),
+        &path,
+        &mode_id,
+        &bind,
+        &model,
+    ) {
+        Err(e) if e.starts_with("AUTH_ERROR:") || e.contains("AUTH_ERROR:") => {
+            let msg = e
+                .split("AUTH_ERROR:")
+                .nth(1)
+                .unwrap_or(e.as_str())
+                .trim()
+                .to_string();
+            return Ok(empty_start(vec![FieldError {
+                key: "_auth".to_string(),
+                message: provider.auth_error_message(&msg),
+            }]));
+        }
+        Err(e) if is_cli_missing(&e) || e == provider.missing_message() => {
+            return Ok(empty_start(vec![FieldError {
+                key: "_cli".to_string(),
+                message: e,
+            }]));
+        }
+        Err(e) if loading => {
+            return Ok(empty_start(vec![FieldError {
+                key: "_session".to_string(),
+                message: friendly_load_error(&e),
+            }]));
+        }
+        Err(e) => return Err(e),
+        Ok((mut client, notes, via)) => {
+            // Cache the adapter's model list (Phase 5). App data only.
+            if provider.id() == ProviderId::Claude && !client.model_entries().is_empty() {
+                let dir = crate::data_dir::app_data_dir(&app).path;
+                let _ = crate::models::remember_claude_models(&dir, client.model_entries());
             }
-            Err(e) if is_cli_missing(&e) || e == provider.missing_message() => {
-                return Ok(empty_start(vec![FieldError {
-                    key: "_cli".to_string(),
-                    message: e,
-                }]));
-            }
-            Err(e) if loading => {
-                return Ok(empty_start(vec![FieldError {
-                    key: "_session".to_string(),
-                    message: friendly_load_error(&e),
-                }]));
-            }
-            Err(e) => return Err(e),
-            Ok((mut client, notes, via)) => {
-                // Cache the adapter's model list (Phase 5). App data only.
-                if provider.id() == ProviderId::Claude && !client.model_entries().is_empty() {
-                    let dir = crate::data_dir::app_data_dir(&app).path;
-                    let _ = crate::models::remember_claude_models(&dir, client.model_entries());
-                }
-                // The role's reasoning effort (Settings > Models). A level the
-                // session does not offer is skipped; the session keeps its own.
-                if provider.id() == ProviderId::Claude {
-                    let wanted = settings.lock().ok().and_then(|s| {
-                        s.models_for(ProviderId::Claude)
-                            .role_effort
-                            .get(&role.id)
-                            .cloned()
-                    });
-                    if let Some(effort) = wanted {
-                        if let Err(err) = client.apply_effort(&effort) {
-                            eprintln!("DCTerminal: effort {effort} not applied ({err})");
-                        }
+            // The role's reasoning effort (Settings > Models). A level the
+            // session does not offer is skipped; the session keeps its own.
+            if provider.id() == ProviderId::Claude {
+                let wanted = settings.lock().ok().and_then(|s| {
+                    s.models_for(ProviderId::Claude)
+                        .role_effort
+                        .get(&role.id)
+                        .cloned()
+                });
+                if let Some(effort) = wanted {
+                    if let Err(err) = client.apply_effort(&effort) {
+                        eprintln!("DCTerminal: effort {effort} not applied ({err})");
                     }
                 }
-                (client, notes, via)
             }
-        };
+            (client, notes, via)
+        }
+    };
 
     // From here to the registry insert every early return drops the agent
     // through this guard, which stops it (nothing else owns it yet).
@@ -740,10 +745,7 @@ mod tests {
                 exists: false,
             },
         );
-        assert!(provider
-            .config
-            .path
-            .starts_with(&dir.path().display().to_string()));
+        assert!(provider.config.path.starts_with(&dir.path().display().to_string()));
         let on_stage = super::claude_start_mode(&provider, &store, Some(&tagged), &copy);
         let off_stage = super::claude_start_mode(&provider, &store, Some(&plain), &copy);
         unregister_for_test(id);
@@ -783,7 +785,8 @@ mod tests {
         // An agent that outlives its client's pipes: only a stop ends it.
         let mut scenario = claude_scenario(serde_json::json!([]));
         scenario["ignore_eof"] = serde_json::json!(true);
-        let Some(agent) = FakeAgent::new("start_fails", &scenario) else {
+        let Some(agent) = FakeAgent::new("start_fails", &scenario)
+        else {
             return;
         };
         let client = connect(&agent, ProviderId::Claude, "default");
@@ -853,7 +856,8 @@ mod tests {
         // An agent that outlives its client's pipes: only a stop ends it.
         let mut scenario = claude_scenario(serde_json::json!([]));
         scenario["ignore_eof"] = serde_json::json!(true);
-        let Some(agent) = FakeAgent::new("poisoned_registry", &scenario) else {
+        let Some(agent) = FakeAgent::new("poisoned_registry", &scenario)
+        else {
             return;
         };
         let client = connect(&agent, ProviderId::Claude, "default");
@@ -870,10 +874,7 @@ mod tests {
         assert!(registry.is_poisoned());
 
         let result = started.into_live_locked(&registry, "tab-1");
-        assert!(
-            result.is_err(),
-            "a poisoned registry cannot take the session"
-        );
+        assert!(result.is_err(), "a poisoned registry cannot take the session");
         drop(result);
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -899,7 +900,8 @@ mod tests {
 
         let mut scenario = claude_scenario(serde_json::json!([]));
         scenario["ignore_eof"] = serde_json::json!(true);
-        let Some(agent) = FakeAgent::new("successful_start", &scenario) else {
+        let Some(agent) = FakeAgent::new("successful_start", &scenario)
+        else {
             return;
         };
         let client = connect(&agent, ProviderId::Claude, "default");

@@ -71,7 +71,10 @@ fn collect_labeled_options(options: &Value, out: &mut Vec<(String, String)>) {
     };
     for item in items {
         if let Some(value) = item.get("value").and_then(Value::as_str) {
-            let label = item.get("name").and_then(Value::as_str).unwrap_or(value);
+            let label = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(value);
             out.push((value.to_string(), label.to_string()));
         } else if let Some(nested) = item.get("options") {
             collect_labeled_options(nested, out);

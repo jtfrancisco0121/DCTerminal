@@ -8,10 +8,7 @@ use super::folder::{self, OpenError, StageDir, StageInfo, TurnOutcome};
 use super::launch::{self, BridgePlan, BridgeTag};
 use super::schema::{self, FULL_TOOL_NAME};
 use super::watch::InboxEvent;
-use super::{
-    hook, mcp, parse_cli, stop_decision, BridgeNeeds, Cli, Mode, NeedsSource, ResultKind,
-    StageMode, StopDecision,
-};
+use super::{hook, mcp, parse_cli, stop_decision, BridgeNeeds, Cli, Mode, NeedsSource, ResultKind, StageMode, StopDecision};
 use crate::store::{ChainRef, PipelineRun, RunAutopilot, RunStatus};
 use crate::test_support::TempDir;
 use serde_json::{json, Value};
@@ -50,13 +47,7 @@ impl Stage {
         let root = TempDir::new(tag);
         let runs = launch::runs_root(root.path());
         let run_dir = launch::prepare_stage(&runs, &plan, TAB).expect("prepare stage");
-        Self {
-            _root: root,
-            runs,
-            run_dir,
-            key: plan.stage_key,
-            kind: plan.kind,
-        }
+        Self { _root: root, runs, run_dir, key: plan.stage_key, kind: plan.kind }
     }
 
     /// The Planner stage of an Eagle-Eye 1 run.
@@ -161,34 +152,16 @@ fn stop_decision_blocks_once_only_on_autopilot() {
     use StageMode::*;
     use StopDecision::*;
     // A result ends the turn whatever else holds.
-    assert_eq!(
-        stop_decision(Autopilot, false, true, false),
-        End(TurnOutcome::Result)
-    );
-    assert_eq!(
-        stop_decision(Manual, true, true, true),
-        End(TurnOutcome::Result)
-    );
+    assert_eq!(stop_decision(Autopilot, false, true, false), End(TurnOutcome::Result));
+    assert_eq!(stop_decision(Manual, true, true, true), End(TurnOutcome::Result));
     // No result on autopilot: blocked once, never twice.
     assert_eq!(stop_decision(Autopilot, false, false, false), Block);
-    assert_eq!(
-        stop_decision(Autopilot, false, false, true),
-        End(TurnOutcome::NoResult)
-    );
+    assert_eq!(stop_decision(Autopilot, false, false, true), End(TurnOutcome::NoResult));
     // Claude is already continuing for a Stop hook: never block on top (D10).
-    assert_eq!(
-        stop_decision(Autopilot, true, false, false),
-        End(TurnOutcome::NoResult)
-    );
+    assert_eq!(stop_decision(Autopilot, true, false, false), End(TurnOutcome::NoResult));
     // Manual and taken over: nothing is enforced (D13).
-    assert_eq!(
-        stop_decision(Manual, false, false, false),
-        End(TurnOutcome::NoResult)
-    );
-    assert_eq!(
-        stop_decision(Takeover, false, false, false),
-        End(TurnOutcome::NoResult)
-    );
+    assert_eq!(stop_decision(Manual, false, false, false), End(TurnOutcome::NoResult));
+    assert_eq!(stop_decision(Takeover, false, false, false), End(TurnOutcome::NoResult));
 }
 
 #[test]
@@ -199,9 +172,7 @@ fn user_prompt_submit_starts_the_turn_with_claudes_prompt_id() {
     assert_eq!(turn.turn, "p-1");
     assert!(!turn.blocked);
     assert!(turn.ended.is_none());
-    let kept = stage
-        .run_dir
-        .join("stages/pr_reviewer/payloads/UserPromptSubmit.json");
+    let kept = stage.run_dir.join("stages/pr_reviewer/payloads/UserPromptSubmit.json");
     let kept: Value = serde_json::from_str(&std::fs::read_to_string(kept).unwrap()).unwrap();
     assert_eq!(kept, prompt("p-1"), "the raw payload is kept");
 }
@@ -210,26 +181,18 @@ fn user_prompt_submit_starts_the_turn_with_claudes_prompt_id() {
 fn a_reviewer_that_forgets_the_tool_is_blocked_once_then_ends_with_no_result() {
     let stage = Stage::new("bridge_block_once", true);
     stage.hook("UserPromptSubmit", prompt("p-1"));
-    let block = stage
-        .hook("Stop", stop("p-1", false, "Looks good."))
-        .expect("a block");
+    let block = stage.hook("Stop", stop("p-1", false, "Looks good.")).expect("a block");
     assert_eq!(block["decision"], "block");
     let reason = block["reason"].as_str().unwrap();
     // The reason names the exact tool and its arguments (V0 T3).
     assert!(reason.contains(FULL_TOOL_NAME), "{reason}");
-    assert!(
-        reason.contains("\"verdict\"") && reason.contains("CHANGES_REQUIRED"),
-        "{reason}"
-    );
+    assert!(reason.contains("\"verdict\"") && reason.contains("CHANGES_REQUIRED"), "{reason}");
     assert!(stage.open().turn().unwrap().blocked);
     assert!(stage.inbox().is_empty(), "a blocked stop is not a turn end");
 
     // The next Stop is another hook process (a fresh StageDir): with
     // stop_hook_active false, only turn.json's blocked flag ends the turn.
-    assert_eq!(
-        stage.hook("Stop", stop("p-1", false, "Still looks good.")),
-        None
-    );
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Still looks good.")), None);
     let events = stage.inbox();
     assert_eq!(events.len(), 1);
     let event = &events[0];
@@ -279,16 +242,9 @@ fn each_turn_gets_its_own_block() {
     let stage = Stage::new("bridge_block_per_turn", true);
     stage.hook("UserPromptSubmit", prompt("p-1"));
     assert!(stage.hook("Stop", stop("p-1", false, "")).is_some());
-    assert_eq!(
-        stage.hook("Stop", stop("p-1", false, "")),
-        None,
-        "blocked once per turn"
-    );
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "")), None, "blocked once per turn");
     stage.hook("UserPromptSubmit", prompt("p-2"));
-    assert!(
-        stage.hook("Stop", stop("p-2", false, "")).is_some(),
-        "a new turn is blocked again"
-    );
+    assert!(stage.hook("Stop", stop("p-2", false, "")).is_some(), "a new turn is blocked again");
 }
 
 #[test]
@@ -331,22 +287,13 @@ fn an_abandoned_turn_is_replaced_by_the_next_prompt_and_never_reported() {
 #[test]
 fn an_idle_prompt_closes_out_an_abandoned_turn_without_a_decision() {
     let stage = Stage::new("bridge_idle_abandoned", true);
-    let tag = BridgeTag {
-        run_id: RUN.into(),
-        stage: "pr_reviewer".into(),
-    };
+    let tag = BridgeTag { run_id: RUN.into(), stage: "pr_reviewer".into() };
     stage.hook("UserPromptSubmit", prompt("p-1"));
     // A result was filed, then Esc: no Stop for p-1 (V0 T4).
     stage.submit(approved());
-    assert_eq!(
-        stage.hook("Notification", notification("p-1", "idle_prompt")),
-        None
-    );
+    assert_eq!(stage.hook("Notification", notification("p-1", "idle_prompt")), None);
     let closed = stage.open().turn().unwrap();
-    assert_eq!(
-        closed.ended.as_ref().map(|end| end.outcome),
-        Some(TurnOutcome::Abandoned)
-    );
+    assert_eq!(closed.ended.as_ref().map(|end| end.outcome), Some(TurnOutcome::Abandoned));
     // Autopilot never acts on it: no inbox event, and Continue reads nothing back.
     assert!(stage.events().is_empty());
     assert_eq!(launch::read_stage_turn(&stage.runs, &tag, TAB), None);
@@ -356,18 +303,11 @@ fn an_idle_prompt_closes_out_an_abandoned_turn_without_a_decision() {
     // An idle prompt for another turn, or after a turn that ended, changes nothing.
     stage.hook("UserPromptSubmit", prompt("p-2"));
     stage.hook("Notification", notification("p-1", "idle_prompt"));
-    assert_eq!(
-        stage.open().turn().unwrap().ended,
-        None,
-        "p-2 is still open"
-    );
+    assert_eq!(stage.open().turn().unwrap().ended, None, "p-2 is still open");
     stage.submit(approved());
     stage.hook("Stop", stop("p-2", false, "Approved."));
     stage.hook("Notification", notification("p-2", "idle_prompt"));
-    assert_eq!(
-        stage.open().turn().unwrap().ended.map(|end| end.outcome),
-        Some(TurnOutcome::Result)
-    );
+    assert_eq!(stage.open().turn().unwrap().ended.map(|end| end.outcome), Some(TurnOutcome::Result));
     assert_eq!(stage.inbox().len(), 1);
 }
 
@@ -385,11 +325,7 @@ fn a_stop_without_a_prompt_id_belongs_to_the_open_turn() {
     stage.submit(approved());
     let mut payload = stop("", false, "Approved.");
     payload.as_object_mut().unwrap().remove("prompt_id");
-    assert_eq!(
-        stage.hook("Stop", payload),
-        None,
-        "the result filed for the open turn counts"
-    );
+    assert_eq!(stage.hook("Stop", payload), None, "the result filed for the open turn counts");
     assert_eq!(stage.inbox()[0].outcome, TurnOutcome::Result);
 }
 
@@ -397,20 +333,11 @@ fn a_stop_without_a_prompt_id_belongs_to_the_open_turn() {
 fn pre_tool_use_allows_only_submit_result() {
     let stage = Stage::new("bridge_pretool", false);
     let allow = stage
-        .hook(
-            "PreToolUse",
-            json!({ "tool_name": FULL_TOOL_NAME, "tool_input": {}, "prompt_id": "p" }),
-        )
+        .hook("PreToolUse", json!({ "tool_name": FULL_TOOL_NAME, "tool_input": {}, "prompt_id": "p" }))
         .expect("allow");
     assert_eq!(allow["hookSpecificOutput"]["permissionDecision"], "allow");
     assert_eq!(allow["hookSpecificOutput"]["hookEventName"], "PreToolUse");
-    assert_eq!(
-        stage.hook(
-            "PreToolUse",
-            json!({ "tool_name": "Bash", "tool_input": {} })
-        ),
-        None
-    );
+    assert_eq!(stage.hook("PreToolUse", json!({ "tool_name": "Bash", "tool_input": {} })), None);
 }
 
 #[test]
@@ -437,12 +364,7 @@ fn a_tab_that_lost_its_stage_is_stale_and_its_hooks_do_nothing() {
     );
     let cli = cli_for(&stage.run_dir, "Stop");
     let mut out = Vec::new();
-    let code = super::run_hook(
-        &cli,
-        "Stop",
-        stop("p-1", false, "").to_string().as_bytes(),
-        &mut out,
-    );
+    let code = super::run_hook(&cli, "Stop", stop("p-1", false, "").to_string().as_bytes(), &mut out);
     assert_eq!(code, 0);
     assert!(out.is_empty(), "no block from a stale tab");
     assert!(stage.inbox().is_empty());
@@ -454,19 +376,10 @@ fn a_tab_that_lost_its_stage_is_stale_and_its_hooks_do_nothing() {
 fn the_run_id_stage_and_folder_must_match() {
     let stage = Stage::new("bridge_checks", true);
     let invalid = |dir: &Path, run: &str, key: &str, tab: &str| {
-        matches!(
-            StageDir::open(dir, run, key, tab),
-            Err(OpenError::Invalid(_))
-        )
+        matches!(StageDir::open(dir, run, key, tab), Err(OpenError::Invalid(_)))
     };
-    assert!(
-        invalid(&stage.run_dir, "ee_other", "pr_reviewer", TAB),
-        "run id is not the folder's"
-    );
-    assert!(
-        invalid(&stage.run_dir, RUN, "planner", TAB),
-        "no such stage"
-    );
+    assert!(invalid(&stage.run_dir, "ee_other", "pr_reviewer", TAB), "run id is not the folder's");
+    assert!(invalid(&stage.run_dir, RUN, "planner", TAB), "no such stage");
     assert!(invalid(&stage.run_dir, RUN, "../../etc", TAB), "climbs out");
     assert!(invalid(&stage.run_dir, RUN, "..", TAB));
     assert!(invalid(&stage.run_dir, "../x", "pr_reviewer", TAB));
@@ -485,37 +398,23 @@ fn a_hook_with_a_bad_setup_exits_1_and_writes_nothing() {
     let mut out = Vec::new();
     assert_eq!(super::run_hook(&cli, "Stop", &b"{}"[..], &mut out), 1);
     assert!(out.is_empty());
-    assert!(
-        !dir.exists(),
-        "nothing created outside a prepared run folder"
-    );
+    assert!(!dir.exists(), "nothing created outside a prepared run folder");
     // A command line that does not parse exits 1 too: exit 2 would block a
     // Stop or erase a prompt.
-    let args: Vec<String> = ["hook", "--run", RUN]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let args: Vec<String> = ["hook", "--run", RUN].iter().map(|s| s.to_string()).collect();
     assert_eq!(super::run_cli(&args), 1);
 }
 
 #[test]
 fn odd_turn_ids_are_hashed_into_a_safe_file_name() {
-    assert_eq!(
-        folder::turn_file_name("4bb9dfae-c4ce-43d9"),
-        "4bb9dfae-c4ce-43d9.json"
-    );
+    assert_eq!(folder::turn_file_name("4bb9dfae-c4ce-43d9"), "4bb9dfae-c4ce-43d9.json");
     let odd = folder::turn_file_name("../../x");
-    assert!(
-        odd.starts_with("t-") && odd.ends_with(".json") && !odd.contains('/'),
-        "{odd}"
-    );
+    assert!(odd.starts_with("t-") && odd.ends_with(".json") && !odd.contains('/'), "{odd}");
 }
 
 fn cli_for(dir: &Path, event: &str) -> Cli {
     Cli {
-        mode: Mode::Hook {
-            event: event.into(),
-        },
+        mode: Mode::Hook { event: event.into() },
         run_dir: dir.to_path_buf(),
         run_id: RUN.into(),
         stage_key: "pr_reviewer".into(),
@@ -527,51 +426,14 @@ fn cli_for(dir: &Path, event: &str) -> Cli {
 fn the_command_line_is_parsed_and_checked() {
     let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let cli = parse_cli(&args(&[
-        "hook",
-        "--run-dir",
-        "/r/ee_1",
-        "--run",
-        "ee_1",
-        "--stage",
-        "pr_reviewer",
-        "--tab",
-        "t1",
-        "--event",
-        "Stop",
+        "hook", "--run-dir", "/r/ee_1", "--run", "ee_1", "--stage", "pr_reviewer", "--tab", "t1", "--event", "Stop",
     ]))
     .unwrap();
-    assert_eq!(
-        cli.mode,
-        Mode::Hook {
-            event: "Stop".into()
-        }
-    );
+    assert_eq!(cli.mode, Mode::Hook { event: "Stop".into() });
     assert_eq!(cli.run_dir, PathBuf::from("/r/ee_1"));
-    let mcp = parse_cli(&args(&[
-        "mcp",
-        "--run-dir",
-        "/r/ee_1",
-        "--run",
-        "ee_1",
-        "--stage",
-        "s",
-        "--tab",
-        "t",
-    ]))
-    .unwrap();
+    let mcp = parse_cli(&args(&["mcp", "--run-dir", "/r/ee_1", "--run", "ee_1", "--stage", "s", "--tab", "t"])).unwrap();
     assert_eq!(mcp.mode, Mode::Mcp);
-    assert!(parse_cli(&args(&[
-        "hook",
-        "--run-dir",
-        "/r",
-        "--run",
-        "x",
-        "--stage",
-        "s",
-        "--tab",
-        "t"
-    ]))
-    .is_err());
+    assert!(parse_cli(&args(&["hook", "--run-dir", "/r", "--run", "x", "--stage", "s", "--tab", "t"])).is_err());
     assert!(parse_cli(&args(&["serve"])).is_err());
     assert!(parse_cli(&args(&["mcp", "--run-dir"])).is_err());
     assert!(parse_cli(&args(&["mcp", "--nope", "1"])).is_err());
@@ -632,68 +494,39 @@ fn every_problem_is_named_at_once() {
 
 #[test]
 fn missing_fields_and_wrong_shapes_are_named() {
-    let problems = schema::validate(ResultKind::Reviewer, &json!({}))
-        .unwrap_err()
-        .join("\n");
+    let problems = schema::validate(ResultKind::Reviewer, &json!({})).unwrap_err().join("\n");
     assert!(problems.contains("`verdict` is missing"), "{problems}");
     assert!(problems.contains("`findings` is missing"), "{problems}");
-    let problems = schema::validate(
-        ResultKind::Reviewer,
-        &json!({ "verdict": 3, "findings": {} }),
-    )
-    .unwrap_err()
-    .join("\n");
-    assert!(
-        problems.contains("`verdict` must be a string"),
-        "{problems}"
-    );
+    let problems = schema::validate(ResultKind::Reviewer, &json!({ "verdict": 3, "findings": {} }))
+        .unwrap_err()
+        .join("\n");
+    assert!(problems.contains("`verdict` must be a string"), "{problems}");
     assert!(problems.contains("`findings` must be a list"), "{problems}");
     assert!(schema::validate(ResultKind::Reviewer, &json!("APPROVED")).is_err());
 }
 
 #[test]
 fn changes_required_needs_a_finding_and_findings_are_capped() {
-    let empty = schema::validate(
-        ResultKind::Reviewer,
-        &json!({ "verdict": "CHANGES_REQUIRED", "findings": [] }),
-    )
-    .unwrap_err();
-    assert!(
-        empty[0].contains("CHANGES_REQUIRED but `findings` is empty"),
-        "{empty:?}"
-    );
+    let empty = schema::validate(ResultKind::Reviewer, &json!({ "verdict": "CHANGES_REQUIRED", "findings": [] }))
+        .unwrap_err();
+    assert!(empty[0].contains("CHANGES_REQUIRED but `findings` is empty"), "{empty:?}");
     let many: Vec<Value> = (0..=schema::MAX_FINDINGS)
         .map(|i| json!({ "severity": "LOW", "summary": format!("f{i}") }))
         .collect();
-    let capped = schema::validate(
-        ResultKind::Reviewer,
-        &json!({ "verdict": "APPROVED", "findings": many }),
-    )
-    .unwrap_err();
-    assert_eq!(
-        capped,
-        vec!["`findings` has 101 items; at most 100".to_string()]
-    );
+    let capped = schema::validate(ResultKind::Reviewer, &json!({ "verdict": "APPROVED", "findings": many }))
+        .unwrap_err();
+    assert_eq!(capped, vec!["`findings` has 101 items; at most 100".to_string()]);
 }
 
 #[test]
 fn the_texts_name_the_tool_and_its_arguments() {
     let instructions = schema::result_instructions(ResultKind::Reviewer);
-    for word in [
-        FULL_TOOL_NAME,
-        "`verdict`",
-        "`findings`",
-        "APPROVED_WITH_CHANGES",
-        "HANDOFF",
-    ] {
+    for word in [FULL_TOOL_NAME, "`verdict`", "`findings`", "APPROVED_WITH_CHANGES", "HANDOFF"] {
         assert!(instructions.contains(word), "{word}");
     }
     let tool = schema::tool_definition(ResultKind::Reviewer);
     assert_eq!(tool["name"], "submit_result");
-    assert_eq!(
-        tool["inputSchema"]["required"],
-        json!(["verdict", "findings"])
-    );
+    assert_eq!(tool["inputSchema"]["required"], json!(["verdict", "findings"]));
 }
 
 // ---- the MCP server ---------------------------------------------------------
@@ -702,34 +535,17 @@ fn the_texts_name_the_tool_and_its_arguments() {
 fn the_server_answers_the_handshake_and_lists_one_tool() {
     let stage = Stage::new("bridge_mcp_handshake", true);
     let server = stage.server();
-    let init = mcp::handle(
-        &server,
-        &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": { "protocolVersion": "2025-11-25", "capabilities": {} } }),
-    )
+    let init = mcp::handle(&server, &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "protocolVersion": "2025-11-25", "capabilities": {} } }))
     .unwrap();
     assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
     assert_eq!(init["result"]["serverInfo"]["name"], "dcterminal");
     assert!(init["result"]["capabilities"]["tools"].is_object());
-    assert_eq!(
-        mcp::handle(
-            &server,
-            &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })
-        ),
-        None
-    );
+    assert_eq!(mcp::handle(&server, &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })), None);
     // Claude Code asks this first; refusing it is fine (V0).
-    let discover = mcp::handle(
-        &server,
-        &json!({ "jsonrpc": "2.0", "id": 0, "method": "server/discover" }),
-    )
-    .unwrap();
+    let discover = mcp::handle(&server, &json!({ "jsonrpc": "2.0", "id": 0, "method": "server/discover" })).unwrap();
     assert_eq!(discover["error"]["code"], -32601);
-    let list = mcp::handle(
-        &server,
-        &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
-    )
-    .unwrap();
+    let list = mcp::handle(&server, &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
     let tools = list["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0]["name"], "submit_result");
@@ -747,14 +563,8 @@ fn rejected_arguments_get_a_tool_error_and_nothing_is_saved() {
     // Fixed in the same turn: accepted and filed under the turn.
     let reply = stage.submit(approved());
     assert_eq!(reply["isError"], false);
-    assert!(reply["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("APPROVED"));
-    assert_eq!(
-        stage.open().result("p-1").unwrap().result["verdict"],
-        "APPROVED"
-    );
+    assert!(reply["content"][0]["text"].as_str().unwrap().contains("APPROVED"));
+    assert_eq!(stage.open().result("p-1").unwrap().result["verdict"], "APPROVED");
 }
 
 #[test]
@@ -768,17 +578,10 @@ fn the_startup_prompt_turn_counts_even_without_a_user_prompt_submit() {
     assert!(stage.hook("PreToolUse", pre).is_some(), "allowed");
     assert_eq!(stage.open().turn().unwrap().turn, "p-1");
     assert_eq!(stage.submit(approved())["isError"], false);
-    assert_eq!(
-        stage.hook("Stop", stop("p-1", false, "Approved.")),
-        None,
-        "no block: the result is in"
-    );
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Approved.")), None, "no block: the result is in");
     let events = stage.inbox();
     assert_eq!(events.len(), 1);
-    assert_eq!(
-        (events[0].turn.as_str(), events[0].outcome),
-        ("p-1", TurnOutcome::Result)
-    );
+    assert_eq!((events[0].turn.as_str(), events[0].outcome), ("p-1", TurnOutcome::Result));
 
     // Neither hook seen: the tool opens the turn itself and the Stop ends it.
     let stage = Stage::new("bridge_first_turn_tool_only", true);
@@ -790,26 +593,17 @@ fn the_startup_prompt_turn_counts_even_without_a_user_prompt_submit() {
     assert!(!events[0].blocked);
     // The next turn starts clean.
     stage.hook("UserPromptSubmit", prompt("p-10"));
-    assert!(
-        stage.hook("Stop", stop("p-10", false, "")).is_some(),
-        "a new turn without a result is blocked"
-    );
+    assert!(stage.hook("Stop", stop("p-10", false, "")).is_some(), "a new turn without a result is blocked");
 }
 
 #[test]
 fn a_call_to_another_tool_is_refused() {
     let stage = Stage::new("bridge_mcp_no_turn", true);
-    let other = mcp::handle(
-        &stage.server(),
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": { "name": "other_tool", "arguments": {} } }),
-    )
+    let other = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "other_tool", "arguments": {} } }))
     .unwrap();
     assert_eq!(other["result"]["isError"], true);
-    assert!(
-        stage.open().turn().is_none(),
-        "only submit_result opens a fallback turn"
-    );
+    assert!(stage.open().turn().is_none(), "only submit_result opens a fallback turn");
 }
 
 #[test]
@@ -845,18 +639,13 @@ fn engine2_run(autopilot: bool) -> PipelineRun {
     .unwrap();
     run.engine = launch::ENGINE_V2;
     run.status = RunStatus::Running;
-    run.autopilot = Some(RunAutopilot {
-        enabled: autopilot,
-        ..RunAutopilot::default()
-    });
+    run.autopilot = Some(RunAutopilot { enabled: autopilot, ..RunAutopilot::default() });
     run
 }
 
 fn chain(step: u32, lane: Option<&str>) -> ChainRef {
-    serde_json::from_value(
-        json!({ "chainId": RUN, "kind": "eagle1", "step": step, "total": 4, "lane": lane }),
-    )
-    .unwrap()
+    serde_json::from_value(json!({ "chainId": RUN, "kind": "eagle1", "step": step, "total": 4, "lane": lane }))
+        .unwrap()
 }
 
 #[test]
@@ -868,48 +657,27 @@ fn a_saved_run_without_an_engine_is_engine_1_and_is_never_bridged() {
     .unwrap();
     assert_eq!(run.engine, 1);
     let def = crate::pipelines::find("full").unwrap();
-    assert_eq!(
-        launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer"),
-        None
-    );
+    assert_eq!(launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer"), None);
 }
 
 #[test]
 fn reviewer_planner_and_implementer_stages_of_engine_2_runs_are_bridged() {
     let def = crate::pipelines::find("full").unwrap();
     let run = engine2_run(true);
-    let pr =
-        launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer").expect("PR Reviewer");
+    let pr = launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer").expect("PR Reviewer");
     assert_eq!(pr.stage_key, "pr_reviewer");
     assert_eq!(pr.kind, ResultKind::Reviewer);
     assert!(pr.autopilot);
-    let plan_review =
-        launch::plan_for(&run, &def, &chain(2, None), "role_plan_reviewer").expect("Plan Reviewer");
+    let plan_review = launch::plan_for(&run, &def, &chain(2, None), "role_plan_reviewer").expect("Plan Reviewer");
     assert_eq!(plan_review.stage_id, "plan_reviewer");
     // V2b: the Planner and the Implementer too; a role off its step is not bridged.
     let planner = launch::plan_for(&run, &def, &chain(1, None), "role_planner").expect("Planner");
     assert_eq!(planner.kind, ResultKind::Planner);
-    let implementer =
-        launch::plan_for(&run, &def, &chain(3, None), "role_implementer").expect("Implementer");
+    let implementer = launch::plan_for(&run, &def, &chain(3, None), "role_implementer").expect("Implementer");
     assert_eq!(implementer.kind, ResultKind::Implementer);
-    assert_eq!(
-        launch::plan_for(&run, &def, &chain(3, None), "role_planner"),
-        None
-    );
-    assert_eq!(
-        launch::plan_for(&run, &def, &chain(4, None), "role_general"),
-        None
-    );
-    assert!(
-        !launch::plan_for(
-            &engine2_run(false),
-            &def,
-            &chain(4, None),
-            "role_pr_reviewer"
-        )
-        .unwrap()
-        .autopilot
-    );
+    assert_eq!(launch::plan_for(&run, &def, &chain(3, None), "role_planner"), None);
+    assert_eq!(launch::plan_for(&run, &def, &chain(4, None), "role_general"), None);
+    assert!(!launch::plan_for(&engine2_run(false), &def, &chain(4, None), "role_pr_reviewer").unwrap().autopilot);
 }
 
 #[test]
@@ -920,8 +688,7 @@ fn a_copied_reviewer_is_bridged_by_its_stage_kind_like_the_built_in_one() {
     // A copy of the PR Reviewer on the same stage, its kind set explicitly.
     def.stages[3].role_id = "role_custom_7".into();
     def.stages[3].kind = Some(crate::pipelines::StageKind::Reviewer);
-    let copied =
-        launch::plan_for(&run, &def, &chain(4, None), "role_custom_7").expect("copied reviewer");
+    let copied = launch::plan_for(&run, &def, &chain(4, None), "role_custom_7").expect("copied reviewer");
     assert_eq!(copied.kind, built_in.kind);
     assert_eq!(copied.stage_key, built_in.stage_key);
     // A reviewer stage with no loop-back still reports through the bridge.
@@ -930,10 +697,7 @@ fn a_copied_reviewer_is_bridged_by_its_stage_kind_like_the_built_in_one() {
     // A stage marked generic is not a reviewer, even with a loop-back.
     let mut def = crate::pipelines::find("full").unwrap();
     def.stages[3].kind = Some(crate::pipelines::StageKind::Generic);
-    assert_eq!(
-        launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer"),
-        None
-    );
+    assert_eq!(launch::plan_for(&run, &def, &chain(4, None), "role_pr_reviewer"), None);
 }
 
 #[test]
@@ -945,12 +709,10 @@ fn copied_planner_and_implementer_roles_are_bridged_by_their_stage_kind() {
     def.stages[0].kind = Some(StageKind::Planner);
     def.stages[2].role_id = "role_custom_impl".into();
     def.stages[2].kind = Some(StageKind::Implementer);
-    let planner = launch::plan_for(&run, &def, &chain(1, None), "role_custom_planner")
-        .expect("copied Planner");
+    let planner = launch::plan_for(&run, &def, &chain(1, None), "role_custom_planner").expect("copied Planner");
     assert_eq!(planner.kind, ResultKind::Planner);
     assert_eq!(planner.stage_key, "planner");
-    let implementer = launch::plan_for(&run, &def, &chain(3, None), "role_custom_impl")
-        .expect("copied Implementer");
+    let implementer = launch::plan_for(&run, &def, &chain(3, None), "role_custom_impl").expect("copied Implementer");
     assert_eq!(implementer.kind, ResultKind::Implementer);
     // A form start of a pipeline whose first stage is a copied Planner.
     let first = launch::new_chain(&def, "eagle1", 7);
@@ -961,19 +723,14 @@ fn copied_planner_and_implementer_roles_are_bridged_by_their_stage_kind() {
     // A built-in Planner role on a stage marked generic is not bridged.
     let mut def = crate::pipelines::find("full").unwrap();
     def.stages[0].kind = Some(StageKind::Generic);
-    assert_eq!(
-        launch::plan_for(&run, &def, &chain(1, None), "role_planner"),
-        None
-    );
+    assert_eq!(launch::plan_for(&run, &def, &chain(1, None), "role_planner"), None);
 }
 
 #[test]
 fn a_lane_names_its_own_stage_folder() {
     let def = crate::pipelines::find("full").unwrap();
     let mut run = engine2_run(true);
-    run.lanes =
-        serde_json::from_value(json!([{ "id": "pr1", "title": "PR1", "status": "active" }]))
-            .unwrap();
+    run.lanes = serde_json::from_value(json!([{ "id": "pr1", "title": "PR1", "status": "active" }])).unwrap();
     let plan = launch::plan_for(&run, &def, &chain(4, Some("pr1")), "role_pr_reviewer").unwrap();
     assert_eq!(plan.stage_key, "pr_reviewer@pr1");
     assert_eq!(plan.lane.as_deref(), Some("pr1"));
@@ -986,15 +743,7 @@ fn a_lane_names_its_own_stage_folder() {
 fn a_stage_with_parallel_reviewers_keeps_the_v1_path() {
     let mut def = crate::pipelines::find("full").unwrap();
     def.stages[3].also_reviewers = vec!["role_security_reviewer".into()];
-    assert_eq!(
-        launch::plan_for(
-            &engine2_run(true),
-            &def,
-            &chain(4, None),
-            "role_pr_reviewer"
-        ),
-        None
-    );
+    assert_eq!(launch::plan_for(&engine2_run(true), &def, &chain(4, None), "role_pr_reviewer"), None);
 }
 
 /// V3: the run actor follows only runs whose every stage reports through
@@ -1003,10 +752,7 @@ fn a_stage_with_parallel_reviewers_keeps_the_v1_path() {
 fn only_a_pipeline_the_bridge_covers_whole_starts_on_engine_2() {
     let builtin = crate::pipelines::find("full").unwrap();
     assert_eq!(launch::engine_for(&builtin), launch::ENGINE_V2);
-    assert_eq!(
-        launch::engine_for(&crate::pipelines::find("execute").unwrap()),
-        launch::ENGINE_V2
-    );
+    assert_eq!(launch::engine_for(&crate::pipelines::find("execute").unwrap()), launch::ENGINE_V2);
     let mut parallel = builtin.clone();
     parallel.stages[3].also_reviewers = vec!["role_security_reviewer".into()];
     assert_eq!(launch::engine_for(&parallel), 1);
@@ -1017,16 +763,8 @@ fn only_a_pipeline_the_bridge_covers_whole_starts_on_engine_2() {
     assert_eq!(launch::engine_for(&generic), 1);
     // Its first stage then starts without the bridge.
     let start = launch::new_chain(&parallel, "custom", 1);
-    assert_eq!(
-        launch::plan_for_new_run(&parallel, &start, "role_planner"),
-        None
-    );
-    assert!(launch::plan_for_new_run(
-        &builtin,
-        &launch::new_chain(&builtin, "eagle1", 1),
-        "role_planner"
-    )
-    .is_some());
+    assert_eq!(launch::plan_for_new_run(&parallel, &start, "role_planner"), None);
+    assert!(launch::plan_for_new_run(&builtin, &launch::new_chain(&builtin, "eagle1", 1), "role_planner").is_some());
 }
 
 /// V3 with H4: engine 2 follows the stage kinds, so a pipeline of copied
@@ -1047,21 +785,14 @@ fn a_pipeline_of_copied_roles_starts_on_engine_2_like_the_built_in_one() {
     .unwrap();
     assert_eq!(launch::engine_for(&copied), launch::ENGINE_V2);
     let start = launch::new_chain(&copied, "copied_all", 1);
-    let plan = launch::plan_for_new_run(&copied, &start, "role_custom_planner")
-        .expect("the copied Planner is bridged");
+    let plan = launch::plan_for_new_run(&copied, &start, "role_custom_planner").expect("the copied Planner is bridged");
     assert_eq!(plan.kind, ResultKind::Planner);
 }
 
 /// A bridged role launch as `role_terminal_start` builds it, with H5's
 /// status-line settings (`status`) when it applies.
 fn bridged_launch(status: Option<Value>, prompt: Option<&str>) -> Vec<String> {
-    bridged_launch_as(
-        ResultKind::Reviewer,
-        "role_pr_reviewer",
-        "pr_reviewer",
-        status,
-        prompt,
-    )
+    bridged_launch_as(ResultKind::Reviewer, "role_pr_reviewer", "pr_reviewer", status, prompt)
 }
 
 /// [`bridged_launch`] for a stage reporting as `kind`.
@@ -1088,21 +819,14 @@ fn bridged_launch_as(
         settings: status,
     };
     launch::bridged_command(request, Some(flags), |req| {
-        Ok(ProgramArgs::new(
-            "claude",
-            crate::provider::claude::claude_terminal_args(req)?,
-        ))
+        Ok(ProgramArgs::new("claude", crate::provider::claude::claude_terminal_args(req)?))
     })
     .unwrap()
     .args
 }
 
 fn settings_of(args: &[String]) -> Value {
-    assert_eq!(
-        args.iter().filter(|a| *a == "--settings").count(),
-        1,
-        "exactly one --settings: {args:?}"
-    );
+    assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1, "exactly one --settings: {args:?}");
     let at = args.iter().position(|a| a == "--settings").unwrap();
     serde_json::from_str(&args[at + 1]).unwrap()
 }
@@ -1113,33 +837,15 @@ fn a_bridged_launch_merges_the_hooks_and_the_status_line_into_one_settings_flag(
     let args = bridged_launch(Some(status.clone()), Some("PROMPT"));
     let settings = settings_of(&args);
     assert_eq!(settings["statusLine"], status["statusLine"], "{settings}");
-    for event in [
-        "UserPromptSubmit",
-        "Stop",
-        "PreToolUse",
-        "PermissionRequest",
-        "Notification",
-    ] {
+    for event in ["UserPromptSubmit", "Stop", "PreToolUse", "PermissionRequest", "Notification"] {
         let hook = &settings["hooks"][event][0]["hooks"][0];
         assert_eq!(hook["type"], "command", "{event}");
-        let hook_args: Vec<&str> = hook["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|a| a.as_str().unwrap())
-            .collect();
+        let hook_args: Vec<&str> = hook["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
         assert_eq!(&hook_args[..2], &["bridge", "hook"], "{event}");
         assert_eq!(hook_args.last(), Some(&event), "{event}");
-        assert!(
-            hook_args.contains(&TAB)
-                && hook_args.contains(&RUN)
-                && hook_args.contains(&"pr_reviewer")
-        );
+        assert!(hook_args.contains(&TAB) && hook_args.contains(&RUN) && hook_args.contains(&"pr_reviewer"));
     }
-    assert_eq!(
-        settings["hooks"]["PreToolUse"][0]["matcher"],
-        FULL_TOOL_NAME
-    );
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], FULL_TOOL_NAME);
     // The variadic flags end at --settings (one value), so the prompt stays positional and last.
     let tools = args.iter().position(|a| a == "--allowedTools").unwrap();
     let mcp_at = args.iter().position(|a| a == "--mcp-config").unwrap();
@@ -1158,58 +864,22 @@ fn a_bridged_launch_merges_the_hooks_and_the_status_line_into_one_settings_flag(
 fn every_bridged_stage_type_gets_one_settings_with_the_status_line_and_all_its_hooks() {
     let status = crate::status_line::settings("'dct' --dct-status-line '/data/usage/tab.json'");
     for (kind, role, stage, matcher) in [
-        (
-            ResultKind::Planner,
-            "role_planner",
-            "planner",
-            "ExitPlanMode",
-        ),
-        (
-            ResultKind::Reviewer,
-            "role_pr_reviewer",
-            "pr_reviewer",
-            FULL_TOOL_NAME,
-        ),
-        (
-            ResultKind::Implementer,
-            "role_implementer",
-            "implementer",
-            FULL_TOOL_NAME,
-        ),
+        (ResultKind::Planner, "role_planner", "planner", "ExitPlanMode"),
+        (ResultKind::Reviewer, "role_pr_reviewer", "pr_reviewer", FULL_TOOL_NAME),
+        (ResultKind::Implementer, "role_implementer", "implementer", FULL_TOOL_NAME),
     ] {
         let args = bridged_launch_as(kind, role, stage, Some(status.clone()), Some("PROMPT"));
         let settings = settings_of(&args);
-        assert_eq!(
-            settings["statusLine"], status["statusLine"],
-            "{kind:?}: {settings}"
-        );
-        for event in [
-            "UserPromptSubmit",
-            "Stop",
-            "PreToolUse",
-            "PermissionRequest",
-            "Notification",
-        ] {
+        assert_eq!(settings["statusLine"], status["statusLine"], "{kind:?}: {settings}");
+        for event in ["UserPromptSubmit", "Stop", "PreToolUse", "PermissionRequest", "Notification"] {
             let hook = &settings["hooks"][event][0]["hooks"][0];
             assert_eq!(hook["type"], "command", "{kind:?} {event}: {settings}");
-            assert_eq!(
-                hook["args"].as_array().unwrap().last().unwrap(),
-                event,
-                "{kind:?} {event}"
-            );
+            assert_eq!(hook["args"].as_array().unwrap().last().unwrap(), event, "{kind:?} {event}");
         }
-        assert_eq!(
-            settings["hooks"]["PreToolUse"][0]["matcher"], matcher,
-            "{kind:?}"
-        );
-        assert_eq!(
-            args.last().map(String::as_str),
-            Some("PROMPT"),
-            "{kind:?}: {args:?}"
-        );
+        assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], matcher, "{kind:?}");
+        assert_eq!(args.last().map(String::as_str), Some("PROMPT"), "{kind:?}: {args:?}");
         // The Planner reports through ExitPlanMode: no tool to allow or serve.
-        let has_tool =
-            args.iter().any(|a| a == "--allowedTools") && args.iter().any(|a| a == "--mcp-config");
+        let has_tool = args.iter().any(|a| a == "--allowedTools") && args.iter().any(|a| a == "--mcp-config");
         assert_eq!(has_tool, kind != ResultKind::Planner, "{kind:?}: {args:?}");
     }
 }
@@ -1239,37 +909,20 @@ fn turning_autopilot_on_and_off_rewrites_each_stage_mode() {
 #[test]
 fn the_latest_finished_turn_is_read_back_for_its_own_tab_only() {
     let stage = Stage::new("bridge_read_back", true);
-    let tag = BridgeTag {
-        run_id: RUN.into(),
-        stage: "pr_reviewer".into(),
-    };
-    assert_eq!(
-        launch::read_stage_turn(&stage.runs, &tag, TAB),
-        None,
-        "no turn yet"
-    );
+    let tag = BridgeTag { run_id: RUN.into(), stage: "pr_reviewer".into() };
+    assert_eq!(launch::read_stage_turn(&stage.runs, &tag, TAB), None, "no turn yet");
     stage.hook("UserPromptSubmit", prompt("p-1"));
-    assert_eq!(
-        launch::read_stage_turn(&stage.runs, &tag, TAB),
-        None,
-        "still running"
-    );
+    assert_eq!(launch::read_stage_turn(&stage.runs, &tag, TAB), None, "still running");
     stage.submit(approved());
     stage.hook("Stop", stop("p-1", false, "Approved."));
     let turn = launch::read_stage_turn(&stage.runs, &tag, TAB).expect("ended turn");
     assert_eq!(turn.outcome, TurnOutcome::Result);
     assert_eq!(turn.result.unwrap()["verdict"], "APPROVED");
     assert_eq!(turn.last_assistant_message, "Approved.");
-    assert_eq!(
-        launch::read_stage_turn(&stage.runs, &tag, "tab_other"),
-        None
-    );
+    assert_eq!(launch::read_stage_turn(&stage.runs, &tag, "tab_other"), None);
     // A new tab on the stage starts with no turn.
     launch::prepare_stage(&stage.runs, &plan(true), "tab_reviewer_2").unwrap();
-    assert_eq!(
-        launch::read_stage_turn(&stage.runs, &tag, "tab_reviewer_2"),
-        None
-    );
+    assert_eq!(launch::read_stage_turn(&stage.runs, &tag, "tab_reviewer_2"), None);
 }
 
 #[test]
@@ -1295,10 +948,7 @@ fn stage_info_round_trips_camel_case() {
     }))
     .unwrap();
     assert_eq!(info.lane.as_deref(), Some("pr1"));
-    assert_eq!(
-        serde_json::to_value(&info).unwrap()["stageKey"],
-        "pr_reviewer@pr1"
-    );
+    assert_eq!(serde_json::to_value(&info).unwrap()["stageKey"], "pr_reviewer@pr1");
 }
 
 // ---- the Planner: ExitPlanMode capture (D11, V2b) ---------------------------
@@ -1326,10 +976,7 @@ fn denial(reply: &Option<Value>) -> String {
     let reply = reply.as_ref().expect("a reply");
     assert_eq!(reply["hookSpecificOutput"]["hookEventName"], "PreToolUse");
     assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny");
-    reply["hookSpecificOutput"]["permissionDecisionReason"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    reply["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().to_string()
 }
 
 #[test]
@@ -1340,10 +987,7 @@ fn a_planners_exit_plan_mode_saves_the_plan_and_tasks_and_is_denied_as_received(
     let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan)));
     assert_eq!(reason, schema::PLAN_RECEIVED);
     assert!(reason.contains("do not start implementing"));
-    assert_eq!(
-        std::fs::read_to_string(stage.run_dir.join("plan.md")).unwrap(),
-        plan
-    );
+    assert_eq!(std::fs::read_to_string(stage.run_dir.join("plan.md")).unwrap(), plan);
     let tasks = launch::read_run_tasks(&stage.runs, RUN).expect("tasks.json");
     assert_eq!(tasks.turn, "p-1");
     assert_eq!(tasks.stage_key, "planner");
@@ -1352,10 +996,7 @@ fn a_planners_exit_plan_mode_saves_the_plan_and_tasks_and_is_denied_as_received(
     assert_eq!(tasks.tasks[1].depends_on, ["pr1"]);
     assert!(!tasks.tasks[1].manual, "manual defaults to false");
     // The Stop that follows (no block: the plan is the turn's result).
-    assert_eq!(
-        stage.hook("Stop", stop("p-1", false, "The plan is written.")),
-        None
-    );
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "The plan is written.")), None);
     let turn = stage.inbox().pop().expect("turn ended");
     assert_eq!(turn.outcome, TurnOutcome::Result);
     assert!(!turn.blocked);
@@ -1372,22 +1013,10 @@ fn the_first_turn_without_a_user_prompt_submit_still_works_for_the_planner_and_t
     let stage = Stage::planner("bridge_plan_first_turn", true);
     let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))));
     assert_eq!(reason, schema::PLAN_RECEIVED);
-    assert_eq!(
-        launch::read_run_tasks(&stage.runs, RUN)
-            .expect("tasks.json")
-            .turn,
-        "p-1"
-    );
-    assert_eq!(
-        stage.hook("Stop", stop("p-1", false, "Planned.")),
-        None,
-        "no block: the plan is the result"
-    );
+    assert_eq!(launch::read_run_tasks(&stage.runs, RUN).expect("tasks.json").turn, "p-1");
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Planned.")), None, "no block: the plan is the result");
     let turn = stage.inbox().pop().expect("turn ended");
-    assert_eq!(
-        (turn.turn.as_str(), turn.outcome),
-        ("p-1", TurnOutcome::Result)
-    );
+    assert_eq!((turn.turn.as_str(), turn.outcome), ("p-1", TurnOutcome::Result));
 
     // The Implementer, via PreToolUse for submit_result: its prs.json and result join the Stop.
     let stage = Stage::implementer("bridge_impl_first_turn_pre_tool", None);
@@ -1395,27 +1024,16 @@ fn the_first_turn_without_a_user_prompt_submit_still_works_for_the_planner_and_t
         "tool_name": FULL_TOOL_NAME, "tool_input": implemented() });
     assert!(stage.hook("PreToolUse", pre).is_some(), "allowed");
     assert_eq!(stage.submit(implemented())["isError"], false);
-    assert_eq!(
-        stage.hook("Stop", stop("p-1", false, "Opened PR #12.")),
-        None
-    );
+    assert_eq!(stage.hook("Stop", stop("p-1", false, "Opened PR #12.")), None);
     let turn = stage.inbox().pop().expect("turn ended");
-    assert_eq!(
-        (turn.turn.as_str(), turn.outcome),
-        ("p-1", TurnOutcome::Result)
-    );
-    let prs: Value =
-        serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("prs.json")).unwrap())
-            .unwrap();
+    assert_eq!((turn.turn.as_str(), turn.outcome), ("p-1", TurnOutcome::Result));
+    let prs: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("prs.json")).unwrap()).unwrap();
     assert_eq!(prs["turn"], "p-1");
 
     // The Implementer with neither hook seen: the tool opens a turn and the Stop ends it.
     let stage = Stage::implementer("bridge_impl_first_turn_tool_only", None);
     assert_eq!(stage.submit(implemented())["isError"], false);
-    assert_eq!(
-        stage.hook("Stop", stop("p-9", false, "Opened PR #12.")),
-        None
-    );
+    assert_eq!(stage.hook("Stop", stop("p-9", false, "Opened PR #12.")), None);
     let turn = stage.inbox().pop().expect("turn ended");
     assert_eq!(turn.outcome, TurnOutcome::Result);
     assert_eq!(turn.result.unwrap()["prs"][0]["branch"], "feat/refresh");
@@ -1427,21 +1045,13 @@ fn a_plan_whose_tasks_have_problems_is_denied_naming_them_and_nothing_is_saved()
     stage.hook("UserPromptSubmit", prompt("p-1"));
     let bad = r#"{"tasks": [{"id": "pr1", "title": "A", "summary": "x", "dependsOn": ["pr3"], "owner": "me"}]}"#;
     let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(bad))));
-    assert!(
-        reason.contains("pr1 depends on \"pr3\", which is not a task"),
-        "{reason}"
-    );
-    assert!(
-        reason.contains("`tasks[0].owner` is not a field"),
-        "{reason}"
-    );
+    assert!(reason.contains("pr1 depends on \"pr3\", which is not a task"), "{reason}");
+    assert!(reason.contains("`tasks[0].owner` is not a field"), "{reason}");
     assert!(reason.contains("call ExitPlanMode again"), "{reason}");
     assert!(!stage.run_dir.join("plan.md").exists());
     assert_eq!(launch::read_run_tasks(&stage.runs, RUN), None);
     // Ending the turn without a taken plan: blocked once on autopilot, naming ExitPlanMode.
-    let block = stage
-        .hook("Stop", stop("p-1", false, "Here is my plan."))
-        .expect("block");
+    let block = stage.hook("Stop", stop("p-1", false, "Here is my plan.")).expect("block");
     assert_eq!(block["decision"], "block");
     assert!(block["reason"].as_str().unwrap().contains("ExitPlanMode"));
     // Fixed in the same turn: taken, and the next stop ends with it.
@@ -1457,17 +1067,11 @@ fn a_taken_over_planner_gets_the_normal_dialog_and_other_stages_never_capture_pl
     let stage = Stage::planner("bridge_plan_takeover", true);
     folder::write_mode(&stage.run_dir.join("stages/planner"), StageMode::Takeover).unwrap();
     stage.hook("UserPromptSubmit", prompt("p-1"));
-    assert_eq!(
-        stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))),
-        None
-    );
+    assert_eq!(stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))), None);
     assert!(!stage.run_dir.join("tasks.json").exists());
     let reviewer = Stage::new("bridge_plan_reviewer", true);
     reviewer.hook("UserPromptSubmit", prompt("p-1"));
-    assert_eq!(
-        reviewer.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))),
-        None
-    );
+    assert_eq!(reviewer.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(TWO_TASKS))), None);
     assert!(!reviewer.run_dir.join("tasks.json").exists());
 }
 
@@ -1485,10 +1089,7 @@ fn a_manual_planner_still_hands_its_plan_over() {
 #[test]
 fn planner_tasks_name_every_problem() {
     let missing = schema::planner_tasks("# Plan\n\nNo block here.").unwrap_err();
-    assert!(
-        missing[0].contains("no ```json block with `tasks`"),
-        "{missing:?}"
-    );
+    assert!(missing[0].contains("no ```json block with `tasks`"), "{missing:?}");
     let broken = schema::planner_tasks("```json\n{\"tasks\": [\n```").unwrap_err();
     assert!(broken[0].contains("not valid JSON"), "{broken:?}");
     assert!(schema::planner_tasks("").unwrap_err()[0].contains("empty"));
@@ -1516,24 +1117,16 @@ fn planner_tasks_name_every_problem() {
     ))
     .unwrap_err()
     .join("\n");
-    assert!(
-        dup.contains("pr1 depends on itself") && dup.contains("\"pr1\" is used twice"),
-        "{dup}"
-    );
+    assert!(dup.contains("pr1 depends on itself") && dup.contains("\"pr1\" is used twice"), "{dup}");
     let cycle = schema::planner_tasks(&plan_with(
         r#"{"tasks": [{"id": "pr1", "title": "A", "summary": "a", "dependsOn": ["pr2"]}, {"id": "pr2", "title": "B", "summary": "b", "dependsOn": ["pr1"]}]}"#,
     ))
     .unwrap_err();
     assert!(cycle[0].contains("pr1 → pr2 → pr1"), "{cycle:?}");
-    let many: Vec<Value> = (1..=9)
-        .map(|n| json!({ "id": format!("pr{n}"), "title": "T", "summary": "s" }))
-        .collect();
-    let too_many =
-        schema::planner_tasks(&plan_with(&json!({ "tasks": many }).to_string())).unwrap_err();
+    let many: Vec<Value> = (1..=9).map(|n| json!({ "id": format!("pr{n}"), "title": "T", "summary": "s" })).collect();
+    let too_many = schema::planner_tasks(&plan_with(&json!({ "tasks": many }).to_string())).unwrap_err();
     assert!(too_many[0].contains("at most 8"), "{too_many:?}");
-    assert!(
-        schema::planner_tasks(&plan_with(r#"{"tasks": []}"#)).unwrap_err()[0].contains("one task")
-    );
+    assert!(schema::planner_tasks(&plan_with(r#"{"tasks": []}"#)).unwrap_err()[0].contains("one task"));
 }
 
 #[test]
@@ -1560,10 +1153,7 @@ fn implemented() -> Value {
 fn a_valid_implementer_result_is_kept_with_only_the_schema_fields() {
     let result = schema::validate(ResultKind::Implementer, &implemented()).unwrap();
     assert_eq!(result["schema"], 1);
-    assert_eq!(
-        result["prs"][0]["url"],
-        "https://github.com/acme/app/pull/12"
-    );
+    assert_eq!(result["prs"][0]["url"], "https://github.com/acme/app/pull/12");
     assert_eq!(result["prs"][0]["lane"], "pr1");
     assert_eq!(result["checks"][0]["passed"], true);
     let no_checks = schema::validate(
@@ -1605,60 +1195,33 @@ fn implementer_results_name_every_problem() {
     ] {
         assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
     }
-    let none = schema::validate(
-        ResultKind::Implementer,
-        &json!({ "prs": [], "summary": "s" }),
-    )
-    .unwrap_err();
+    let none = schema::validate(ResultKind::Implementer, &json!({ "prs": [], "summary": "s" })).unwrap_err();
     assert!(none[0].contains("`prs` is empty"));
-    let nine: Vec<Value> = (1..=9)
-        .map(|n| json!({ "url": format!("https://x/pull/{n}"), "branch": "b", "title": "t" }))
-        .collect();
-    let many = schema::validate(
-        ResultKind::Implementer,
-        &json!({ "prs": nine, "summary": "s" }),
-    )
-    .unwrap_err();
+    let nine: Vec<Value> = (1..=9).map(|n| json!({ "url": format!("https://x/pull/{n}"), "branch": "b", "title": "t" })).collect();
+    let many = schema::validate(ResultKind::Implementer, &json!({ "prs": nine, "summary": "s" })).unwrap_err();
     assert!(many[0].contains("at most 8"));
-    assert!(
-        schema::validate(ResultKind::Planner, &json!({})).unwrap_err()[0].contains("ExitPlanMode")
-    );
+    assert!(schema::validate(ResultKind::Planner, &json!({})).unwrap_err()[0].contains("ExitPlanMode"));
 }
 
 #[test]
 fn an_implementer_submit_saves_its_pull_requests_for_the_run_and_lists_its_own_tool() {
     let stage = Stage::implementer("bridge_impl", Some("pr1"));
-    let listed = mcp::handle(
-        &stage.server(),
-        &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
-    )
-    .unwrap();
+    let listed = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).unwrap();
     let tool = &listed["result"]["tools"][0];
     assert_eq!(tool["inputSchema"]["required"], json!(["summary"]));
     stage.hook("UserPromptSubmit", prompt("p-1"));
     let reply = stage.submit(implemented());
     assert_eq!(reply["isError"], false, "{reply}");
-    assert!(reply["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("1 pull request(s)"));
-    let saved: Value =
-        serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("prs-pr1.json")).unwrap())
-            .unwrap();
+    assert!(reply["content"][0]["text"].as_str().unwrap().contains("1 pull request(s)"));
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("prs-pr1.json")).unwrap()).unwrap();
     assert_eq!(saved["lane"], "pr1");
     assert_eq!(saved["turn"], "p-1");
     assert_eq!(saved["result"]["prs"][0]["branch"], "feat/refresh");
-    assert!(
-        !stage.run_dir.join("prs.json").exists(),
-        "a lane writes its own file"
-    );
+    assert!(!stage.run_dir.join("prs.json").exists(), "a lane writes its own file");
     stage.hook("Stop", stop("p-1", false, "Opened PR #12."));
     let turn = stage.inbox().pop().unwrap();
     assert_eq!(turn.outcome, TurnOutcome::Result);
-    assert_eq!(
-        turn.result.unwrap()["summary"],
-        "Expired tokens are refreshed once."
-    );
+    assert_eq!(turn.result.unwrap()["summary"], "Expired tokens are refreshed once.");
     // Without a lane: prs.json.
     let single = Stage::implementer("bridge_impl_single", None);
     single.hook("UserPromptSubmit", prompt("p-1"));
@@ -1674,42 +1237,21 @@ fn a_blocked_implementer_reports_why_with_no_pull_requests() {
         &json!({ "summary": "Nothing could be built.", "blocked": "The plan's API does not exist in this repository." }),
     )
     .expect("a blocked Implementer can report");
-    assert_eq!(
-        result["blocked"],
-        "The plan's API does not exist in this repository."
-    );
+    assert_eq!(result["blocked"], "The plan's API does not exist in this repository.");
     assert_eq!(result["prs"], json!([]));
     let empty = json!({ "prs": [], "summary": "s", "blocked": "No access to the remote." });
     assert!(schema::validate(ResultKind::Implementer, &empty).is_ok());
     // Some pull requests opened, then blocked on the rest.
     let mut partial = implemented();
     partial["blocked"] = json!("PR2 needs a design decision.");
-    assert_eq!(
-        schema::validate(ResultKind::Implementer, &partial).unwrap()["prs"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(schema::validate(ResultKind::Implementer, &partial).unwrap()["prs"].as_array().unwrap().len(), 1);
     // A blank reason is a problem; without `blocked`, an empty list still is.
-    let blank = schema::validate(
-        ResultKind::Implementer,
-        &json!({ "summary": "s", "blocked": "  " }),
-    )
-    .unwrap_err();
+    let blank = schema::validate(ResultKind::Implementer, &json!({ "summary": "s", "blocked": "  " })).unwrap_err();
     assert!(blank.iter().any(|p| p.contains("`blocked`")), "{blank:?}");
-    assert!(schema::validate(
-        ResultKind::Implementer,
-        &json!({ "prs": [], "summary": "s" })
-    )
-    .is_err());
+    assert!(schema::validate(ResultKind::Implementer, &json!({ "prs": [], "summary": "s" })).is_err());
     // The tool and the block both say how.
     let stage = Stage::implementer("bridge_impl_blocked", None);
-    let listed = mcp::handle(
-        &stage.server(),
-        &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
-    )
-    .unwrap();
+    let listed = mcp::handle(&stage.server(), &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })).unwrap();
     let input = &listed["result"]["tools"][0]["inputSchema"];
     assert!(input["properties"]["blocked"].is_object(), "{input}");
     assert_eq!(input["required"], json!(["summary"]));
@@ -1728,14 +1270,9 @@ fn a_blocked_implementer_reports_why_with_no_pull_requests() {
 fn an_implementer_that_forgets_the_tool_is_told_to_report_its_pull_requests() {
     let stage = Stage::implementer("bridge_impl_forgets", None);
     stage.hook("UserPromptSubmit", prompt("p-1"));
-    let block = stage
-        .hook("Stop", stop("p-1", false, "Done."))
-        .expect("block");
+    let block = stage.hook("Stop", stop("p-1", false, "Done.")).expect("block");
     let reason = block["reason"].as_str().unwrap();
-    assert!(
-        reason.contains(FULL_TOOL_NAME) && reason.contains("\"prs\""),
-        "{reason}"
-    );
+    assert!(reason.contains(FULL_TOOL_NAME) && reason.contains("\"prs\""), "{reason}");
 }
 
 // ---- Needs you: PermissionRequest, then the Notification backup (D22) -------
@@ -1755,11 +1292,7 @@ fn notification(turn: &str, kind: &str) -> Value {
 fn a_permission_request_posts_needs_you_and_leaves_the_dialog_alone() {
     let stage = Stage::implementer("bridge_needs", None);
     stage.hook("UserPromptSubmit", prompt("p-1"));
-    assert_eq!(
-        stage.hook("PermissionRequest", permission_request("p-1", "Bash")),
-        None,
-        "no decision: the dialog stays"
-    );
+    assert_eq!(stage.hook("PermissionRequest", permission_request("p-1", "Bash")), None, "no decision: the dialog stays");
     let needs = stage.needs();
     assert_eq!(needs.len(), 1);
     assert_eq!(needs[0].source, NeedsSource::PermissionRequest);
@@ -1768,10 +1301,7 @@ fn a_permission_request_posts_needs_you_and_leaves_the_dialog_alone() {
     assert_eq!(needs[0].tab_id, TAB);
     assert_eq!(needs[0].stage_key, "implementer");
     // The late Notification for the same turn is not posted again.
-    assert_eq!(
-        stage.hook("Notification", notification("p-1", "permission_prompt")),
-        None
-    );
+    assert_eq!(stage.hook("Notification", notification("p-1", "permission_prompt")), None);
     assert!(stage.needs().is_empty());
     // An idle notification is not Needs you: it closes out the turn whose
     // permission was rejected (no Stop came, D9a) as abandoned, with no
@@ -1780,10 +1310,7 @@ fn a_permission_request_posts_needs_you_and_leaves_the_dialog_alone() {
     assert!(stage.events().is_empty());
     let closed = stage.open().turn().unwrap();
     assert_eq!(closed.turn, "p-1");
-    assert_eq!(
-        closed.ended.map(|end| end.outcome),
-        Some(TurnOutcome::Abandoned)
-    );
+    assert_eq!(closed.ended.map(|end| end.outcome), Some(TurnOutcome::Abandoned));
     // A turn whose PermissionRequest never came: the Notification is the backup.
     stage.hook("UserPromptSubmit", prompt("p-2"));
     stage.hook("Notification", notification("p-2", "permission_prompt"));
@@ -1805,10 +1332,7 @@ fn a_turn_id_with_needs_in_it_still_ends_as_a_turn() {
     assert_eq!(stage.hook("Stop", stop("p-needs-1", true, "Done.")), None);
     let events = stage.events();
     assert_eq!(events.len(), 1, "{events:?}");
-    assert!(
-        matches!(&events[0], InboxEvent::Turn(turn) if turn.turn == "p-needs-1"),
-        "{events:?}"
-    );
+    assert!(matches!(&events[0], InboxEvent::Turn(turn) if turn.turn == "p-needs-1"), "{events:?}");
 }
 
 #[test]
@@ -1818,44 +1342,22 @@ fn planner_launch_flags_have_no_tool_and_watch_exit_plan_mode() {
     let extra = launch::launch_flags(ResultKind::Planner, program, &run_dir, RUN, "planner", TAB);
     assert!(extra.args.is_empty(), "{extra:?}");
     let settings = &extra.hooks;
-    assert_eq!(
-        settings["hooks"]["PreToolUse"][0]["matcher"],
-        "ExitPlanMode"
-    );
-    assert!(settings["hooks"]["PermissionRequest"][0]
-        .get("matcher")
-        .is_none());
-    let implementer = launch::launch_flags(
-        ResultKind::Implementer,
-        program,
-        &run_dir,
-        RUN,
-        "implementer",
-        TAB,
-    );
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
+    assert!(settings["hooks"]["PermissionRequest"][0].get("matcher").is_none());
+    let implementer = launch::launch_flags(ResultKind::Implementer, program, &run_dir, RUN, "implementer", TAB);
     assert_eq!(implementer.args[0], "--allowedTools");
     // A relaunch keeps the stage's own kind.
     let stage = Stage::planner("bridge_plan_relaunch", true);
-    let tag = BridgeTag {
-        run_id: RUN.into(),
-        stage: "planner".into(),
-    };
+    let tag = BridgeTag { run_id: RUN.into(), stage: "planner".into() };
     let again = launch::relaunch_flags(&stage.runs, &tag, TAB, program).unwrap();
     assert!(again.args.is_empty(), "{again:?}");
-    assert_eq!(
-        again.hooks["hooks"]["PreToolUse"][0]["matcher"],
-        "ExitPlanMode"
-    );
+    assert_eq!(again.hooks["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
 }
 
 #[test]
 fn the_role_texts_say_how_each_stage_reports() {
     let planner = schema::result_instructions(ResultKind::Planner);
-    assert!(
-        planner.contains("ExitPlanMode")
-            && planner.contains("```json")
-            && planner.contains("dependsOn")
-    );
+    assert!(planner.contains("ExitPlanMode") && planner.contains("```json") && planner.contains("dependsOn"));
     assert!(!planner.contains(FULL_TOOL_NAME), "the Planner has no tool");
     let implementer = schema::result_instructions(ResultKind::Implementer);
     assert!(implementer.contains(FULL_TOOL_NAME) && implementer.contains("`prs`"));
@@ -1867,28 +1369,17 @@ fn a_chain_a_form_start_begins_plans_its_first_stage_as_an_engine_2_run() {
     let eagle1 = crate::pipelines::find("eagle1").unwrap();
     let chain = launch::new_chain(&eagle1, "eagle1", 1_760_000_000_123);
     assert_eq!(chain.chain_id, "ee_1760000000123");
-    assert_eq!(
-        (chain.step, chain.total, chain.lane.as_deref()),
-        (1, 4, None)
-    );
+    assert_eq!((chain.step, chain.total, chain.lane.as_deref()), (1, 4, None));
     let planner = launch::plan_for_new_run(&eagle1, &chain, "role_planner").expect("Planner");
     assert_eq!(planner.run_id, "ee_1760000000123");
     assert_eq!(planner.kind, ResultKind::Planner);
     assert!(!planner.autopilot, "a new run starts with autopilot off");
     // The form's role must be the first stage's.
-    assert_eq!(
-        launch::plan_for_new_run(&eagle1, &chain, "role_implementer"),
-        None
-    );
+    assert_eq!(launch::plan_for_new_run(&eagle1, &chain, "role_implementer"), None);
     let eagle2 = crate::pipelines::find("eagle2").unwrap();
     let chain = launch::new_chain(&eagle2, "eagle2", 1);
     assert_eq!(chain.total, 2);
-    assert_eq!(
-        launch::plan_for_new_run(&eagle2, &chain, "role_implementer")
-            .unwrap()
-            .kind,
-        ResultKind::Implementer
-    );
+    assert_eq!(launch::plan_for_new_run(&eagle2, &chain, "role_implementer").unwrap().kind, ResultKind::Implementer);
 }
 
 // ---- L1: a task names a repo from Settings › Repos --------------------------
@@ -1905,15 +1396,10 @@ fn a_task_may_name_a_known_repo_in_any_case_and_keeps_its_settings_spelling() {
       {"id": "pr3", "title": "Docs", "summary": "c", "repo": ""},
       {"id": "pr4", "title": "Notes", "summary": "d", "repo": null}
     ]}"#;
-    let tasks =
-        schema::planner_tasks_with(&plan_with(block), &repos(&["backend", "engine"])).unwrap();
+    let tasks = schema::planner_tasks_with(&plan_with(block), &repos(&["backend", "engine"])).unwrap();
     let named: Vec<Option<&str>> = tasks.iter().map(|t| t.repo.as_deref()).collect();
     assert_eq!(named, [Some("backend"), Some("engine"), None, None]);
-    assert_eq!(
-        tasks[1].depends_on,
-        ["pr1"],
-        "a dependency across repos is a plain dependency"
-    );
+    assert_eq!(tasks[1].depends_on, ["pr1"], "a dependency across repos is a plain dependency");
     // Saved without `repo` when there is none, so tasks.json reads as before L1.
     let saved = serde_json::to_value(&tasks[2]).unwrap();
     assert!(saved.get("repo").is_none(), "{saved}");
@@ -1926,8 +1412,7 @@ fn an_unknown_repo_is_rejected_with_the_valid_names_and_every_other_problem() {
       {"id": "pr1", "title": "", "summary": "a", "repo": "web"},
       {"id": "pr2", "title": "B", "summary": "b", "repo": 7}
     ]}"#;
-    let problems =
-        schema::planner_tasks_with(&plan_with(block), &repos(&["backend", "engine"])).unwrap_err();
+    let problems = schema::planner_tasks_with(&plan_with(block), &repos(&["backend", "engine"])).unwrap_err();
     let text = problems.join("\n");
     for expected in [
         "`tasks[0].title` is empty",
@@ -1937,14 +1422,9 @@ fn an_unknown_repo_is_rejected_with_the_valid_names_and_every_other_problem() {
         assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
     }
     // No repos set up: a task that names one is told to leave it out.
-    let none = schema::planner_tasks(&plan_with(
-        r#"{"tasks": [{"id": "pr1", "title": "A", "summary": "a", "repo": "backend"}]}"#,
-    ))
-    .unwrap_err();
-    assert!(
-        none[0].contains("none are set up in DCTerminal's Settings › Repos, so leave `repo` out"),
-        "{none:?}"
-    );
+    let none = schema::planner_tasks(&plan_with(r#"{"tasks": [{"id": "pr1", "title": "A", "summary": "a", "repo": "backend"}]}"#))
+        .unwrap_err();
+    assert!(none[0].contains("none are set up in DCTerminal's Settings › Repos, so leave `repo` out"), "{none:?}");
     // And a plan without `repo` reads exactly as before, with or without repos.
     let old = schema::planner_tasks_with(&plan_with(TWO_TASKS), &repos(&["backend"])).unwrap();
     assert_eq!(old, schema::planner_tasks(&plan_with(TWO_TASKS)).unwrap());
@@ -1961,68 +1441,33 @@ fn the_planners_hook_checks_repos_against_the_run_folders_repos_json() {
     ]}"#;
     // Before the app wrote repos.json (a run folder from before L1): no repos.
     let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(spans))));
-    assert!(
-        reason.contains("`tasks[0].repo` \"backend\" is not a repo: none are set up"),
-        "{reason}"
-    );
+    assert!(reason.contains("`tasks[0].repo` \"backend\" is not a repo: none are set up"), "{reason}");
     assert_eq!(launch::read_run_tasks(&stage.runs, RUN), None);
     // The app writes repos.json at launch; the bridge only reads it.
-    let entry = |name: &str| crate::store::RepoEntry {
-        name: name.into(),
-        folder: format!("/src/{name}"),
-    };
+    let entry = |name: &str| crate::store::RepoEntry { name: name.into(), folder: format!("/src/{name}") };
     launch::write_run_repos(&stage.run_dir, &[entry("backend")]).unwrap();
     let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(spans))));
-    assert!(
-        reason.contains(
-            "`tasks[1].repo` \"engine\" is not one of the repos in Settings › Repos (backend)"
-        ),
-        "{reason}"
-    );
+    assert!(reason.contains("`tasks[1].repo` \"engine\" is not one of the repos in Settings › Repos (backend)"), "{reason}");
     launch::write_run_repos(&stage.run_dir, &[entry("backend"), entry("engine")]).unwrap();
     let reason = denial(&stage.hook("PreToolUse", exit_plan_mode("p-1", &plan_with(spans))));
     assert_eq!(reason, schema::PLAN_RECEIVED);
     let tasks = launch::read_run_tasks(&stage.runs, RUN).expect("tasks.json");
     let named: Vec<Option<&str>> = tasks.tasks.iter().map(|t| t.repo.as_deref()).collect();
     assert_eq!(named, [Some("backend"), Some("engine")]);
-    let file: Value =
-        serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("repos.json")).unwrap())
-            .unwrap();
-    assert_eq!(
-        file["repos"][1],
-        json!({ "name": "engine", "folder": "/src/engine" })
-    );
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(stage.run_dir.join("repos.json")).unwrap()).unwrap();
+    assert_eq!(file["repos"][1], json!({ "name": "engine", "folder": "/src/engine" }));
 }
 
 #[test]
 fn the_planners_prompt_lists_the_repos_only_when_there_are_some() {
-    let entry = |name: &str, folder: &str| crate::store::RepoEntry {
-        name: name.into(),
-        folder: folder.into(),
-    };
-    let repos = [
-        entry("backend", "/src/koneksi-backend"),
-        entry("engine", "/src/koneksi-engine"),
-    ];
+    let entry = |name: &str, folder: &str| crate::store::RepoEntry { name: name.into(), folder: folder.into() };
+    let repos = [entry("backend", "/src/koneksi-backend"), entry("engine", "/src/koneksi-engine")];
     let planner = schema::stage_instructions(ResultKind::Planner, &repos);
     assert!(planner.starts_with(&schema::result_instructions(ResultKind::Planner)));
-    assert!(
-        planner.contains("- `backend`: /src/koneksi-backend\n- `engine`: /src/koneksi-engine"),
-        "{planner}"
-    );
-    assert!(
-        planner.contains("add `repo` to each task") && planner.contains("\"repo\": \"backend\""),
-        "{planner}"
-    );
-    assert_eq!(
-        schema::stage_instructions(ResultKind::Planner, &[]),
-        schema::result_instructions(ResultKind::Planner)
-    );
+    assert!(planner.contains("- `backend`: /src/koneksi-backend\n- `engine`: /src/koneksi-engine"), "{planner}");
+    assert!(planner.contains("add `repo` to each task") && planner.contains("\"repo\": \"backend\""), "{planner}");
+    assert_eq!(schema::stage_instructions(ResultKind::Planner, &[]), schema::result_instructions(ResultKind::Planner));
     for kind in [ResultKind::Reviewer, ResultKind::Implementer] {
-        assert_eq!(
-            schema::stage_instructions(kind, &repos),
-            schema::result_instructions(kind),
-            "{kind:?}"
-        );
+        assert_eq!(schema::stage_instructions(kind, &repos), schema::result_instructions(kind), "{kind:?}");
     }
 }

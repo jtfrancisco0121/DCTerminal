@@ -154,10 +154,7 @@ pub enum UserAction {
     /// built from the run folder's files (D20), for the hand-off form to
     /// show before you send. Changes nothing.
     #[serde(rename = "prefill", rename_all = "camelCase")]
-    Prefill {
-        source_tab_id: String,
-        target_role_id: String,
-    },
+    Prefill { source_tab_id: String, target_role_id: String },
     /// Record a hand-off on (or, `back`, a send-back) from `source_tab_id`
     /// that you make yourself outside the actor (to a Chat tab), as your
     /// Send records it: a warning when autopilot made it already (`force`
@@ -332,28 +329,13 @@ impl<H: Host> RunActors<H> {
     }
 
     /// A button: send it and wait for the answer.
-    pub fn ask(
-        &self,
-        run_id: &str,
-        action: UserAction,
-        timeout: Duration,
-    ) -> Result<UserOutcome, String> {
+    pub fn ask(&self, run_id: &str, action: UserAction, timeout: Duration) -> Result<UserOutcome, String> {
         let (reply, answer) = channel();
-        self.send(
-            run_id,
-            ActorMsg::User {
-                action,
-                reply: Some(reply),
-            },
-        );
+        self.send(run_id, ActorMsg::User { action, reply: Some(reply) });
         match answer.recv_timeout(timeout) {
             Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => {
-                Err("Autopilot is still busy with this run. Try again in a moment.".into())
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                Err("Autopilot stopped while handling that. See the run's timeline.".into())
-            }
+            Err(RecvTimeoutError::Timeout) => Err("Autopilot is still busy with this run. Try again in a moment.".into()),
+            Err(RecvTimeoutError::Disconnected) => Err("Autopilot stopped while handling that. See the run's timeline.".into()),
         }
     }
 
@@ -397,8 +379,7 @@ impl<H: Host> RunActors<H> {
                     }
                 }
             };
-            let handled =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| actor.handle(msg)));
+            let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| actor.handle(msg)));
             let done = match handled {
                 Ok(done) => done,
                 Err(panic) => {
@@ -421,9 +402,7 @@ impl<H: Host> RunActors<H> {
                 // Drain what came in meanwhile first: each still gets an answer.
                 while let Ok(msg) = rx.try_recv() {
                     drop(senders);
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        actor.handle(msg)
-                    }));
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| actor.handle(msg)));
                     senders = lock(&self.senders);
                 }
                 senders.remove(&run_id);
@@ -436,9 +415,7 @@ impl<H: Host> RunActors<H> {
 /// A poisoned lock still guards good data here: every writer below saves
 /// whole values. Never let one panic take the app's store down with it.
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
@@ -474,9 +451,7 @@ fn stop_after_panic<H: Host>(host: &H, run_id: &str, what: &str) {
     if !changed {
         return;
     }
-    if let Err(err) =
-        crate::bridge::launch::set_run_mode_to(&host.runs_root(), run_id, StageMode::Manual)
-    {
+    if let Err(err) = crate::bridge::launch::set_run_mode_to(&host.runs_root(), run_id, StageMode::Manual) {
         eprintln!("DCTerminal: run {run_id}: bridge mode not updated: {err}");
     }
     host.run_changed(run_id);

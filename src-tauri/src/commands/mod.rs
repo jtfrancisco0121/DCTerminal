@@ -11,22 +11,22 @@ mod dev_session;
 mod forms;
 mod github;
 mod handoff;
-mod model_session;
 pub(crate) mod pipeline;
-#[cfg(all(test, unix))]
-mod pipeline_flow_tests;
+mod model_session;
 mod prompt_worker;
 mod prompts;
 mod providers;
 mod role_session;
+mod usage;
 mod roles;
 pub(crate) mod run_recovery;
+pub(crate) mod session_log;
+#[cfg(all(test, unix))]
+mod pipeline_flow_tests;
 #[cfg(all(test, unix))]
 mod session_flow_tests;
-pub(crate) mod session_log;
 mod setup;
 pub(crate) mod storage;
-mod usage;
 pub(crate) mod workspace;
 mod workspaces;
 mod worktree_tabs;
@@ -35,34 +35,38 @@ pub use activity::{activity_clear, activity_list};
 pub use agent_requests::{
     respond_permission_request, respond_plan_request, respond_question_request,
 };
-pub use app_state::{
-    ack_provider_notice, chain_loop_back, close_tab, create_execution_pipeline_tabs,
-    create_pipeline_tabs, get_app_state, get_layout, get_tab, new_draft_tab, open_chain_overview,
-    open_github_tab, open_preview_tab, reopen_closed_tab, select_active_tab, set_layout,
-    set_preview_url, set_tab_chain, set_tab_color, set_tab_label, start_eagle_eye,
-    sync_active_tab_form,
-};
 pub use attachments::{attachment_add, attachment_read_file, attachment_remove};
+pub use app_state::{
+    ack_provider_notice, close_tab, create_execution_pipeline_tabs, create_pipeline_tabs,
+    get_app_state, get_layout, get_tab, new_draft_tab, reopen_closed_tab, select_active_tab,
+    chain_loop_back, open_chain_overview, set_layout, set_tab_chain, set_tab_color, set_tab_label,
+    start_eagle_eye,
+    sync_active_tab_form,
+    open_github_tab, open_preview_tab, set_preview_url,
+};
 pub use changes::{changes_file_diff, changes_list, changes_revert, changes_snapshot, ChangesRoot};
-pub use clickup::{clickup_status, clickup_test, clickup_token_clear, clickup_token_set};
 pub use cursor_cli::{list_claude_history, list_cursor_cli_history, open_in_cursor_cli};
 pub use dev_session::{
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
-    kill_all_agents, session_agent_logs, SessionRegistry,
+    kill_all_agents, session_agent_logs,
+    SessionRegistry,
 };
+pub use clickup::{clickup_status, clickup_test, clickup_token_clear, clickup_token_set};
 pub use forms::{get_form_recall, save_form_draft};
 pub use github::{
     github_claim_notifications, github_feed, github_push_commits, github_save_filters,
     github_status,
 };
 pub use handoff::{handoff_attach, handoff_bind_tab, handoff_get, handoff_list, handoff_save};
-pub use model_session::{acp_set_effort, acp_set_model};
 pub use pipeline::{
-    get_pipeline_run, pipeline_actor_message, pipeline_approve, pipeline_defs_list,
-    pipeline_defs_save, pipeline_fan_out, pipeline_lane_status, pipeline_promote_plan,
-    pipeline_run_gates, pipeline_run_tasks, pipeline_set_autopilot, pipeline_set_candidate_plan,
-    pipeline_turn_finished,
+    get_pipeline_run, pipeline_defs_list, pipeline_defs_save, pipeline_fan_out,
+    pipeline_approve, pipeline_lane_status, pipeline_turn_finished,
+    pipeline_promote_plan, pipeline_run_gates, pipeline_set_autopilot, pipeline_set_candidate_plan,
+    pipeline_run_tasks, pipeline_actor_message,
 };
+pub use model_session::{acp_set_effort, acp_set_model};
+pub use run_recovery::{autopilot_pending_stops, spawn_run_recovery, StartupStops};
+pub use usage::get_claude_usage;
 pub use prompts::{
     prompt_clear_recent, prompt_delete, prompt_library_get, prompt_mark_used, prompt_record_send,
     prompt_save,
@@ -71,22 +75,18 @@ pub use providers::{
     claude_account_logins, get_provider_settings, set_provider_settings, set_tab_provider,
 };
 pub use role_session::role_session_start;
-pub use roles::{
-    create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template,
-};
-pub use roles::{get_role, list_roles, reset_builtin_role, save_role, validate_and_preview};
-pub use run_recovery::{autopilot_pending_stops, spawn_run_recovery, StartupStops};
 pub(crate) use session_log::forget_tab_session_log;
 pub use session_log::{
     terminal_chat_entries, terminal_chat_unwatch, terminal_chat_watch, terminal_session_log,
 };
+pub use roles::{get_role, list_roles, reset_builtin_role, save_role, validate_and_preview};
+pub use roles::{create_role, delete_role, duplicate_role, export_role, import_role, preview_role_template};
 pub use setup::{first_run_complete, first_run_status, provider_status};
 pub use storage::{startup_notices, storage_cleanup, storage_status};
-pub use usage::get_claude_usage;
 pub use workspace::{
     check_working_folder, cursor_approval_mode, diagnostics_read_log, diagnostics_set_capture,
-    diagnostics_status, export_text_file, history_search, projects_list, projects_remember,
-    projects_remove, projects_toggle_favorite, scratch_load, scratch_save, transcript_load,
+    diagnostics_status, history_search, projects_list, projects_remember, projects_remove,
+    projects_toggle_favorite, export_text_file, scratch_load, scratch_save, transcript_load,
     transcript_save,
 };
 pub use workspaces::{workspace_delete, workspace_open, workspace_save, workspaces_list};

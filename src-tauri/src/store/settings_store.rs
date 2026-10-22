@@ -239,9 +239,7 @@ fn drop_invalid_claude_accounts(claude: &mut ClaudeProviderSettings) {
     claude.accounts.retain(|account| {
         let id = account.id.trim();
         !id.is_empty()
-            && id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             && !account.name.trim().is_empty()
             && clean_optional_path(account.config_dir.clone(), "").is_ok()
             && seen.insert(id.to_string())
@@ -763,8 +761,7 @@ impl SettingsStore {
     /// Paths are trimmed; an empty path clears the setting. Unknown per-role
     /// values are dropped.
     pub fn set_providers(&mut self, mut next: ProvidersSettings) -> Result<(), String> {
-        next.claude.claude_path =
-            clean_optional_path(next.claude.claude_path.take(), "claude path")?;
+        next.claude.claude_path = clean_optional_path(next.claude.claude_path.take(), "claude path")?;
         next.claude.adapter_path =
             clean_optional_path(next.claude.adapter_path.take(), "claude-agent-acp path")?;
         normalize_claude_accounts(&mut next.claude)?;
@@ -978,10 +975,7 @@ mod tests {
             .unwrap();
         let again = SettingsStore::open(&dir).unwrap();
         assert_eq!(again.ui().theme, "github-light");
-        assert_eq!(
-            again.ui().custom_colors.background.as_deref(),
-            Some("#1a2b3c")
-        );
+        assert_eq!(again.ui().custom_colors.background.as_deref(), Some("#1a2b3c"));
         assert!(again.ui().shortcut_bar);
         let old: SettingsFile =
             serde_json::from_value(serde_json::json!({ "schemaVersion": 1 })).unwrap();
@@ -1124,9 +1118,7 @@ mod tests {
             ("role_general".to_string(), "default".to_string()),
             ("role_developer".to_string(), "--max".to_string()),
         ]);
-        store
-            .set_models_for(ProviderId::Claude, next.clone())
-            .unwrap();
+        store.set_models_for(ProviderId::Claude, next.clone()).unwrap();
         let saved = &store.models_for(ProviderId::Claude).role_effort;
         assert_eq!(saved.len(), 1);
         assert_eq!(saved.get("role_planner").map(String::as_str), Some("high"));
@@ -1212,8 +1204,7 @@ mod tests {
     #[test]
     fn clickup_workspaces_are_per_account_and_old_files_load_without_them() {
         let legacy: SettingsFile =
-            serde_json::from_str(include_str!("../../../fixtures/state/legacy-settings.json"))
-                .unwrap();
+            serde_json::from_str(include_str!("../../../fixtures/state/legacy-settings.json")).unwrap();
         assert_eq!(legacy.integrations, IntegrationsSettings::default());
         let partial: SettingsFile =
             serde_json::from_str(r#"{"schemaVersion":1,"integrations":{}}"#).unwrap();
@@ -1225,9 +1216,7 @@ mod tests {
             team_id: "9012345678".into(),
             team_name: "Koneksi QA".into(),
         };
-        store
-            .set_clickup_workspace("default", Some(work.clone()))
-            .unwrap();
+        store.set_clickup_workspace("default", Some(work.clone())).unwrap();
         let again = SettingsStore::open(&dir).unwrap();
         assert_eq!(again.clickup_workspace("default"), Some(&work));
         assert_eq!(again.clickup_workspace("personal"), None);
@@ -1240,12 +1229,7 @@ mod tests {
         );
         store.set_clickup_workspace("default", None).unwrap();
         store.set_clickup_workspace("default", None).unwrap();
-        assert_eq!(
-            SettingsStore::open(&dir)
-                .unwrap()
-                .clickup_workspace("default"),
-            None
-        );
+        assert_eq!(SettingsStore::open(&dir).unwrap().clickup_workspace("default"), None);
     }
 
     #[test]

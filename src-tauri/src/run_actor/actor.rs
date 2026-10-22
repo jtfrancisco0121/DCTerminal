@@ -7,19 +7,17 @@ use super::prompts::{self, StageSources};
 use super::{lock, ActorMsg, Host, Prefill, StageLaunch, UserAction, UserOutcome};
 use crate::bridge::folder::{read_json, RunFindings, RunPrs, TASKS_FILE};
 use crate::bridge::launch::{
-    clear_stage_turn, launch_flags, plan_for, prepare_stage, read_stage_turn, relaunch_flags,
-    restore_stage_turn, set_stage_mode, write_run_repos, BridgeFlags, BridgePlan,
+    clear_stage_turn, launch_flags, plan_for, prepare_stage, read_stage_turn, relaunch_flags, restore_stage_turn,
+    set_stage_mode, write_run_repos, BridgeFlags, BridgePlan,
 };
 use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
 use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
-use crate::pipelines::autopilot::{
-    decide, review_round, stage_key, stop_for_pipeline, Decision, FindingReport, TurnReport,
-};
+use crate::pipelines::autopilot::{decide, review_round, stage_key, stop_for_pipeline, Decision, FindingReport, TurnReport};
 use crate::pipelines::recovery::bridge_turn_key;
 use crate::pipelines::{GateDef, GateResult, PipelineDef, StageDef, StageKind};
 use crate::store::{
-    claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StateStore,
-    StopReason, TabRecord, TerminalTabDraft,
+    claim_key, tab_label, ChainRef, PipelineRun, RoleSnapshot, RunStatus, StageGates, StateStore, StopReason, TabRecord,
+    TerminalTabDraft,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -55,11 +53,7 @@ enum Tagging {
     /// The next stage: the hand-off text is recorded on the run.
     Advance { text: String },
     /// A round sent back to a new terminal of the earlier stage.
-    LoopBack {
-        reviewer_role: String,
-        verdict: String,
-        text: String,
-    },
+    LoopBack { reviewer_role: String, verdict: String, text: String },
     /// A lane's own tab, tagged at fan-out.
     Existing,
 }
@@ -129,11 +123,7 @@ impl<H: Host> Actor<H> {
                     let _ = reply.send(result);
                 }
             }
-            ActorMsg::GatesDone {
-                turn,
-                round,
-                results,
-            } => {
+            ActorMsg::GatesDone { turn, round, results } => {
                 self.gates_running = self.gates_running.saturating_sub(1);
                 self.on_gates_done(turn, round, results);
             }
@@ -191,10 +181,7 @@ impl<H: Host> Actor<H> {
         }
         let placed = self.place_tab(&turn.tab_id)?;
         let tag = placed.tab.bridge.as_ref()?;
-        (tag.run_id == turn.run_id
-            && tag.stage == turn.stage_key
-            && placed.stage.id == turn.stage_id)
-            .then_some(placed)
+        (tag.run_id == turn.run_id && tag.stage == turn.stage_key && placed.stage.id == turn.stage_id).then_some(placed)
     }
 
     /// The stage terminal's usage-limit error for its latest turn (its
@@ -230,8 +217,7 @@ impl<H: Host> Actor<H> {
         let Some(tag) = tab.bridge.as_ref() else {
             return false;
         };
-        self.host.terminal_live(&tab.id)
-            && read_stage_turn(&self.host.runs_root(), tag, &tab.id).is_some()
+        self.host.terminal_live(&tab.id) && read_stage_turn(&self.host.runs_root(), tag, &tab.id).is_some()
     }
 
     /// You took `tab_id` over (V5, D28): autopilot leaves it alone.
@@ -261,12 +247,7 @@ impl<H: Host> Actor<H> {
         if self.decided(&bridge_turn_key(&turn.tab_id, &turn.turn)) {
             return;
         }
-        let verdict = bridge_verdict(
-            review(&turn)
-                .and_then(|r| r.get("verdict"))
-                .and_then(Value::as_str),
-            placed.revise(),
-        );
+        let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
         let (enabled, status, round, mine, held) = {
             let mut store = lock(self.host.store());
             // intentionally silent: the lanes only lose a bar end.
@@ -284,8 +265,7 @@ impl<H: Host> Actor<H> {
                     run.status,
                     run.round_for(placed.lane.as_deref()),
                     run.taken_over.iter().any(|id| id == &placed.tab.id),
-                    run.status == RunStatus::Waiting
-                        && run.stop_reason == Some(StopReason::TakenOver),
+                    run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver),
                 ),
                 None => return,
             }
@@ -345,15 +325,8 @@ impl<H: Host> Actor<H> {
         let gates = placed.stage.gates.clone();
         let folder = {
             let store = lock(self.host.store());
-            let run_cwd = store
-                .pipeline_run_by_id(&self.run_id)
-                .map(|r| r.cwd.clone())
-                .unwrap_or_default();
-            PathBuf::from(if placed.tab.cwd.trim().is_empty() {
-                run_cwd
-            } else {
-                placed.tab.cwd.clone()
-            })
+            let run_cwd = store.pipeline_run_by_id(&self.run_id).map(|r| r.cwd.clone()).unwrap_or_default();
+            PathBuf::from(if placed.tab.cwd.trim().is_empty() { run_cwd } else { placed.tab.cwd.clone() })
         };
         let prs = pr_urls(&turn);
         let host = self.host.clone();
@@ -369,35 +342,25 @@ impl<H: Host> Actor<H> {
                         // to run unless the gate is optional, so the result
                         // carries the gate's flag (as `pipeline_run_gates`).
                         let optional = matches!(gate, GateDef::Command { optional: true, .. });
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            host.run_gate(gate, &folder, &prs)
-                        }))
-                        .unwrap_or_else(|_| GateResult {
-                            kind: "command".into(),
-                            label: "check".into(),
-                            status: "failed".into(),
-                            summary: "The check could not run (internal error).".into(),
-                            output: String::new(),
-                            duration_ms: 0,
-                            optional: false,
-                        });
+                        let result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host.run_gate(gate, &folder, &prs)))
+                                .unwrap_or_else(|_| GateResult {
+                                    kind: "command".into(),
+                                    label: "check".into(),
+                                    status: "failed".into(),
+                                    summary: "The check could not run (internal error).".into(),
+                                    output: String::new(),
+                                    duration_ms: 0,
+                                    optional: false,
+                                });
                         GateResult { optional, ..result }
                     })
                     .collect();
-                let _ = me.send(ActorMsg::GatesDone {
-                    turn,
-                    round,
-                    results,
-                });
+                let _ = me.send(ActorMsg::GatesDone { turn, round, results });
             });
         if let Err(err) = spawned {
             self.gates_running -= 1;
-            self.stop_run(
-                Some(&placed.stage.id),
-                Some(&placed.tab.id),
-                &format!("Autopilot could not run the checks: {err}"),
-                None,
-            );
+            self.stop_run(Some(&placed.stage.id), Some(&placed.tab.id), &format!("Autopilot could not run the checks: {err}"), None);
         }
     }
 
@@ -413,10 +376,7 @@ impl<H: Host> Actor<H> {
             };
             // Results from a round that has ended since are not kept.
             if round == run.round_for(lane) {
-                let tag = lane
-                    .and_then(|id| run.lane(id))
-                    .map(|l| format!("{}: ", l.title))
-                    .unwrap_or_default();
+                let tag = lane.and_then(|id| run.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
                 for result in &results {
                     run.log_in_lane(
                         "gate",
@@ -437,10 +397,7 @@ impl<H: Host> Actor<H> {
                     },
                 );
                 if let Err(err) = store.save() {
-                    eprintln!(
-                        "DCTerminal: run {}: gate results not saved: {err}",
-                        self.run_id
-                    );
+                    eprintln!("DCTerminal: run {}: gate results not saved: {err}", self.run_id);
                 }
             }
         }
@@ -469,13 +426,7 @@ impl<H: Host> Actor<H> {
     /// What `decide` is given for `turn`.
     fn report(&self, placed: &Placed, turn: &BridgeTurn, round: u32) -> TurnReport {
         let usage = self.host.usage_percent(&self.run_id);
-        let mut report = turn_report(
-            &placed.stage,
-            turn,
-            usage,
-            placed.lane.clone(),
-            placed.revise(),
-        );
+        let mut report = turn_report(&placed.stage, turn, usage, placed.lane.clone(), placed.revise());
         // H5: `decide` stops with `usage_limit` for it, ahead of `no_result`.
         report.rate_limit = self.rate_limit(placed);
         report.round = Some(round);
@@ -486,20 +437,13 @@ impl<H: Host> Actor<H> {
     /// While Hand back re-decides (D28): when `turn`'s decision would send a
     /// round back to the handed-back tab, whether you revised that stage
     /// since (decided on a copy of the run; nothing is recorded).
-    fn held_round_for_revised(
-        &self,
-        placed: &Placed,
-        turn: &BridgeTurn,
-        round: u32,
-    ) -> Option<bool> {
+    fn held_round_for_revised(&self, placed: &Placed, turn: &BridgeTurn, round: u32) -> Option<bool> {
         let (tab_id, _) = self.revised.as_ref()?;
         let report = self.report(placed, turn, round);
         let store = lock(self.host.store());
         let run = store.pipeline_run_by_id(&self.run_id)?;
         let decision = decide(&placed.def, &mut run.clone(), &report);
-        if decision.action != "loopBack"
-            || loop_back_tab(&placed.def, run, placed, &decision).as_ref() != Some(tab_id)
-        {
+        if decision.action != "loopBack" || loop_back_tab(&placed.def, run, placed, &decision).as_ref() != Some(tab_id) {
             return None;
         }
         Some(self.revised_target(run, placed, &decision, turn).is_some())
@@ -528,23 +472,11 @@ impl<H: Host> Actor<H> {
             let held = taken_over_target(&placed.def, run, placed, &decision);
             // A round you dealt with yourself (D28) is not sent back: its
             // decision line says so instead of "goes back to".
-            if held.is_none()
-                && decision.action == "loopBack"
-                && self
-                    .revised_target(&trial, placed, &decision, turn)
-                    .is_some()
-            {
-                if let Some(event) = trial
-                    .events
-                    .last_mut()
-                    .filter(|e| e.outcome.as_deref() == Some("loopBack"))
-                {
+            if held.is_none() && decision.action == "loopBack" && self.revised_target(&trial, placed, &decision, turn).is_some() {
+                if let Some(event) = trial.events.last_mut().filter(|e| e.outcome.as_deref() == Some("loopBack")) {
                     event.summary = format!(
                         "{}, which you revised yourself, so nothing was sent.",
-                        event
-                            .summary
-                            .replace(" goes back to ", " was for ")
-                            .trim_end_matches('.')
+                        event.summary.replace(" goes back to ", " was for ").trim_end_matches('.')
                     );
                 }
             }
@@ -563,12 +495,7 @@ impl<H: Host> Actor<H> {
                 "{} finished, and autopilot would act on {title}, which you took over. Hand it back to let autopilot carry on.",
                 placed.stage.title
             );
-            self.stop_run(
-                Some(&stage_id),
-                Some(&tab_id),
-                &summary,
-                Some(StopReason::TakenOver),
-            );
+            self.stop_run(Some(&stage_id), Some(&tab_id), &summary, Some(StopReason::TakenOver));
             return;
         }
         self.changed();
@@ -577,26 +504,16 @@ impl<H: Host> Actor<H> {
 
     // ---- Carrying a decision out ----
 
-    fn carry_out(
-        &mut self,
-        placed: &Placed,
-        turn: &BridgeTurn,
-        decision: &Decision,
-        verdict: Option<&str>,
-    ) {
-        let fail =
-            |actor: &mut Self, what: String| actor.fail(decision, Some(&placed.tab.id), &what);
+    fn carry_out(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision, verdict: Option<&str>) {
+        let fail = |actor: &mut Self, what: String| actor.fail(decision, Some(&placed.tab.id), &what);
         match decision.action.as_str() {
             // A late turn, one decided already, or a stale one: the ledger says which.
             "ignore" | "skip" => {}
             "stop" => {
                 let reason = self.stop_reason().unwrap_or(StopReason::CarryOutFailed);
-                self.host
-                    .stopped(&self.run_id, Some(&placed.tab.id), reason, &decision.reason);
+                self.host.stopped(&self.run_id, Some(&placed.tab.id), reason, &decision.reason);
             }
-            "complete" => self
-                .host
-                .notice(&self.run_id, "Run complete", &decision.reason),
+            "complete" => self.host.notice(&self.run_id, "Run complete", &decision.reason),
             "laneDone" => {
                 for lane in &decision.unblocked {
                     if let Err(err) = self.start_lane(lane) {
@@ -607,13 +524,7 @@ impl<H: Host> Actor<H> {
             "retry" => {
                 let text = decision.message.clone().unwrap_or_default();
                 if !self.idle(&placed.tab) {
-                    fail(
-                        self,
-                        format!(
-                            "send to {}: the terminal is not open and idle.",
-                            placed.tab.label
-                        ),
-                    );
+                    fail(self, format!("send to {}: the terminal is not open and idle.", placed.tab.label));
                     return;
                 }
                 // A failed check resumes the stage's session with its output (D17).
@@ -637,9 +548,7 @@ impl<H: Host> Actor<H> {
             "loopBack" => {
                 let verdict = verdict.unwrap_or(placed.revise()).to_string();
                 if let Some(target) = self.revised_since(placed, decision, turn) {
-                    if let Err(err) =
-                        self.record_round_you_revised(placed, decision, &verdict, &target)
-                    {
+                    if let Err(err) = self.record_round_you_revised(placed, decision, &verdict, &target) {
                         fail(self, format!("record the round: {err}"));
                     }
                     return;
@@ -662,9 +571,7 @@ impl<H: Host> Actor<H> {
 
     fn stop_reason(&self) -> Option<StopReason> {
         let store = lock(self.host.store());
-        store
-            .pipeline_run_by_id(&self.run_id)
-            .and_then(|run| run.stop_reason)
+        store.pipeline_run_by_id(&self.run_id).and_then(|run| run.stop_reason)
     }
 
     /// The decision could not be carried out: give its hand-off record back
@@ -674,33 +581,14 @@ impl<H: Host> Actor<H> {
             let mut store = lock(self.host.store());
             let _ = store.release_handoff_claim(&self.run_id, key);
         }
-        self.stop_run(
-            decision.stage_id.as_deref(),
-            tab_id,
-            &format!("Autopilot could not {what}"),
-            None,
-        );
+        self.stop_run(decision.stage_id.as_deref(), tab_id, &format!("Autopilot could not {what}"), None);
     }
 
-    fn stop_run(
-        &mut self,
-        stage_id: Option<&str>,
-        tab_id: Option<&str>,
-        summary: &str,
-        reason: Option<StopReason>,
-    ) {
+    fn stop_run(&mut self, stage_id: Option<&str>, tab_id: Option<&str>, summary: &str, reason: Option<StopReason>) {
         let reason = reason.unwrap_or(StopReason::CarryOutFailed);
         {
             let mut store = lock(self.host.store());
-            if let Err(err) = note(
-                &mut store,
-                &self.run_id,
-                stage_id,
-                summary,
-                None,
-                true,
-                Some(reason),
-            ) {
+            if let Err(err) = note(&mut store, &self.run_id, stage_id, summary, None, true, Some(reason)) {
                 eprintln!("DCTerminal: run {}: stop not recorded: {err}", self.run_id);
             }
         }
@@ -712,15 +600,7 @@ impl<H: Host> Actor<H> {
         {
             let mut store = lock(self.host.store());
             // intentionally silent: the ledger line is extra; nothing else happens either way.
-            let _ = note(
-                &mut store,
-                &self.run_id,
-                stage_id,
-                summary,
-                None,
-                stop,
-                None,
-            );
+            let _ = note(&mut store, &self.run_id, stage_id, summary, None, stop, None);
         }
         self.changed();
     }
@@ -729,43 +609,25 @@ impl<H: Host> Actor<H> {
     /// pull requests, what the turn said, and (for a reviewer) the findings
     /// its previous round sent back. The run folder is read before the store
     /// is locked.
-    fn sources(
-        &self,
-        placed: &Placed,
-        target: &StageDef,
-        turn: Option<&BridgeTurn>,
-        findings: Option<String>,
-    ) -> StageSources {
+    fn sources(&self, placed: &Placed, target: &StageDef, turn: Option<&BridgeTurn>, findings: Option<String>) -> StageSources {
         let runs = self.host.runs_root();
         let run_dir = crate::bridge::folder::run_dir(&runs, &self.run_id);
         let plan_file = run_dir
             .as_ref()
-            .and_then(|dir| {
-                std::fs::read_to_string(dir.join(crate::bridge::folder::PLAN_FILE)).ok()
-            })
+            .and_then(|dir| std::fs::read_to_string(dir.join(crate::bridge::folder::PLAN_FILE)).ok())
             .filter(|text| !text.trim().is_empty());
         let prs = run_dir
             .as_ref()
-            .and_then(|dir| {
-                read_json::<RunPrs>(
-                    &dir.join(crate::bridge::folder::prs_file_name(placed.lane.as_deref())),
-                )
-            })
+            .and_then(|dir| read_json::<RunPrs>(&dir.join(crate::bridge::folder::prs_file_name(placed.lane.as_deref()))))
             .map(|prs| prs.result);
-        let lane_note = placed
-            .lane
-            .as_deref()
-            .and_then(|lane| lane_note(run_dir.as_deref(), lane));
+        let lane_note = placed.lane.as_deref().and_then(|lane| lane_note(run_dir.as_deref(), lane));
         let run_files = run_dir
             .as_ref()
             .map(|dir| {
                 [
                     ("Plan", crate::bridge::folder::PLAN_FILE.to_string()),
                     ("Tasks", TASKS_FILE.to_string()),
-                    (
-                        "Pull requests",
-                        crate::bridge::folder::prs_file_name(placed.lane.as_deref()),
-                    ),
+                    ("Pull requests", crate::bridge::folder::prs_file_name(placed.lane.as_deref())),
                 ]
                 .into_iter()
                 .map(|(what, name)| (what.to_string(), dir.join(name)))
@@ -782,12 +644,7 @@ impl<H: Host> Actor<H> {
             .map(|stage| stage.role_id.clone());
         let store = lock(self.host.store());
         let run = store.pipeline_run_by_id(&self.run_id);
-        let first_role = placed
-            .def
-            .stages
-            .first()
-            .map(|s| s.role_id.clone())
-            .unwrap_or_default();
+        let first_role = placed.def.stages.first().map(|s| s.role_id.clone()).unwrap_or_default();
         let first_answers = run
             .and_then(|run| run.tab_ids.get(&first_role))
             .and_then(|id| store.tab_by_id(id))
@@ -797,14 +654,7 @@ impl<H: Host> Actor<H> {
             .and_then(|run| run.approved_plan.clone())
             .filter(|text| !text.trim().is_empty())
             .or(plan_file)
-            .or_else(|| {
-                placed
-                    .tab
-                    .answers
-                    .get("approvedPlan")
-                    .cloned()
-                    .filter(|t| !t.trim().is_empty())
-            });
+            .or_else(|| placed.tab.answers.get("approvedPlan").cloned().filter(|t| !t.trim().is_empty()));
         let previous_review = run.zip(sent_back_to).and_then(|(run, role)| {
             let handoffs = match placed.lane.as_deref().and_then(|id| run.lane(id)) {
                 Some(lane) => &lane.handoffs,
@@ -820,9 +670,7 @@ impl<H: Host> Actor<H> {
             first_role,
             plan,
             prs,
-            reply: turn
-                .map(|t| t.last_assistant_message.clone())
-                .unwrap_or_default(),
+            reply: turn.map(|t| t.last_assistant_message.clone()).unwrap_or_default(),
             findings,
             previous_review,
             lane_note,
@@ -832,25 +680,11 @@ impl<H: Host> Actor<H> {
         }
     }
 
-    fn advance(
-        &mut self,
-        placed: &Placed,
-        turn: &BridgeTurn,
-        decision: &Decision,
-    ) -> Result<String, String> {
-        let stage_id = decision
-            .stage_id
-            .as_deref()
-            .ok_or("the decision names no stage")?;
-        let target_index = placed
-            .def
-            .stage_index(stage_id)
-            .ok_or("that stage is not in the pipeline")?;
+    fn advance(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision) -> Result<String, String> {
+        let stage_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
+        let target_index = placed.def.stage_index(stage_id).ok_or("that stage is not in the pipeline")?;
         let target = placed.def.stages[target_index].clone();
-        let role = self
-            .host
-            .role(&target.role_id)
-            .ok_or_else(|| format!("unknown role {}", target.role_id))?;
+        let role = self.host.role(&target.role_id).ok_or_else(|| format!("unknown role {}", target.role_id))?;
         let sources = self.sources(placed, &target, Some(turn), None);
         let built = prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
         let chain = ChainRef {
@@ -869,9 +703,7 @@ impl<H: Host> Actor<H> {
             preferred_tab: None,
             values: built.values,
             handoff_plan: built.handoff_plan,
-            tagging: Tagging::Advance {
-                text: built.handoff_text,
-            },
+            tagging: Tagging::Advance { text: built.handoff_text },
         })
     }
 
@@ -883,14 +715,8 @@ impl<H: Host> Actor<H> {
         turn: &BridgeTurn,
         decision: &Decision,
     ) -> Result<(StageDef, String, Option<PathBuf>), String> {
-        let target_id = decision
-            .stage_id
-            .as_deref()
-            .ok_or("the decision names no stage")?;
-        let target_index = placed
-            .def
-            .stage_index(target_id)
-            .ok_or("that stage is not in the pipeline")?;
+        let target_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
+        let target_index = placed.def.stage_index(target_id).ok_or("that stage is not in the pipeline")?;
         let target = placed.def.stages[target_index].clone();
         let findings = review(turn)
             .and_then(|r| r.get("findings"))
@@ -906,63 +732,26 @@ impl<H: Host> Actor<H> {
                 .unwrap_or(1)
         };
         let file = self.write_findings(turn, round)?;
-        let reviewer_name = self
-            .host
-            .role(&placed.tab.role_id)
-            .map(|r| r.name)
-            .unwrap_or_else(|| placed.stage.title.clone());
-        let text = loop_back_message(
-            target.kind() == StageKind::Planner,
-            &reviewer_name,
-            &findings,
-            round,
-            file.as_deref(),
-        );
+        let reviewer_name = self.host.role(&placed.tab.role_id).map(|r| r.name).unwrap_or_else(|| placed.stage.title.clone());
+        let text = loop_back_message(target.kind() == StageKind::Planner, &reviewer_name, &findings, round, file.as_deref());
         Ok((target, text, file))
     }
 
-    fn loop_back(
-        &mut self,
-        placed: &Placed,
-        turn: &BridgeTurn,
-        decision: &Decision,
-        verdict: &str,
-    ) -> Result<String, String> {
+    fn loop_back(&mut self, placed: &Placed, turn: &BridgeTurn, decision: &Decision, verdict: &str) -> Result<String, String> {
         let (target, text, file) = self.round_back(placed, turn, decision)?;
-        self.send_back(
-            placed,
-            &target,
-            verdict,
-            &text,
-            None,
-            None,
-            Some(turn),
-            file.as_deref(),
-            false,
-        )
+        self.send_back(placed, &target, verdict, &text, None, None, Some(turn), file.as_deref(), false)
     }
 
     /// The tab a held round goes back to when Hand back finds that you
     /// revised it yourself after the round's turn ended (D28): its tab id.
-    fn revised_since(
-        &self,
-        placed: &Placed,
-        decision: &Decision,
-        turn: &BridgeTurn,
-    ) -> Option<String> {
+    fn revised_since(&self, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
         let store = lock(self.host.store());
         let run = store.pipeline_run_by_id(&self.run_id)?;
         self.revised_target(run, placed, decision, turn)
     }
 
     /// [`Self::revised_since`] over `run`, with the store already locked.
-    fn revised_target(
-        &self,
-        run: &PipelineRun,
-        placed: &Placed,
-        decision: &Decision,
-        turn: &BridgeTurn,
-    ) -> Option<String> {
+    fn revised_target(&self, run: &PipelineRun, placed: &Placed, decision: &Decision, turn: &BridgeTurn) -> Option<String> {
         let (tab_id, ended) = self.revised.as_ref()?;
         let target = loop_back_tab(&placed.def, run, placed, decision)?;
         (target == *tab_id && ended_after(ended, &turn.ended_at)).then_some(target)
@@ -977,15 +766,8 @@ impl<H: Host> Actor<H> {
         verdict: &str,
         target_tab: &str,
     ) -> Result<(), String> {
-        let target_id = decision
-            .stage_id
-            .as_deref()
-            .ok_or("the decision names no stage")?;
-        let target = placed
-            .def
-            .stage(target_id)
-            .ok_or("that stage is not in the pipeline")?
-            .clone();
+        let target_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
+        let target = placed.def.stage(target_id).ok_or("that stage is not in the pipeline")?.clone();
         {
             // No hand-off text and no findings file: nothing went to the stage.
             let mut store = lock(self.host.store());
@@ -997,13 +779,9 @@ impl<H: Host> Actor<H> {
                 Some(verdict),
                 None,
             )?;
-            let run = store
-                .pipeline_run_by_id_mut(&self.run_id)
-                .ok_or("the run is gone")?;
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
             if let Some(event) = run.events.last_mut().filter(|e| e.kind == "loopBack") {
-                event.summary = event
-                    .summary
-                    .replace(" sent back (", " dealt with by you (");
+                event.summary = event.summary.replace(" sent back (", " dealt with by you (");
             }
             store.save()?;
         }
@@ -1030,24 +808,12 @@ impl<H: Host> Actor<H> {
             round,
             turn: turn.turn.clone(),
             at: chrono::Utc::now().to_rfc3339(),
-            verdict: result
-                .get("verdict")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            findings: result
-                .get("findings")
-                .cloned()
-                .unwrap_or_else(|| Value::Array(Vec::new())),
+            verdict: result.get("verdict").and_then(Value::as_str).unwrap_or_default().to_string(),
+            findings: result.get("findings").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
         };
         crate::bridge::folder::write_findings(&run_dir, &findings)
             .map(Some)
-            .map_err(|err| {
-                format!(
-                    "could not save the findings in {}: {err}",
-                    run_dir.display()
-                )
-            })
+            .map_err(|err| format!("could not save the findings in {}: {err}", run_dir.display()))
     }
 
     /// Resume `tab`'s session (V4, D17): its program is stopped, then
@@ -1058,13 +824,7 @@ impl<H: Host> Actor<H> {
     /// manual from then on (V2a: `actor_gate_on` → `make_manual`) and nothing
     /// is resumed, since a resume is autopilot's own action: [`MANUAL_NOW`].
     /// The one Timeline note says where `findings` (the round's file) is.
-    fn resume(
-        &mut self,
-        tab: &TabRecord,
-        session_id: &str,
-        prompt: &str,
-        findings: Option<&Path>,
-    ) -> Result<(), String> {
+    fn resume(&mut self, tab: &TabRecord, session_id: &str, prompt: &str, findings: Option<&Path>) -> Result<(), String> {
         let ready = self.resume_gate(tab, findings, false)?;
         self.resume_ready(tab, ready, session_id, prompt)
     }
@@ -1072,16 +832,8 @@ impl<H: Host> Actor<H> {
     /// What a resume of `tab` needs, after the D24 / hooks-off gate let it
     /// through. Run before a round is recorded as sent back, so a refused
     /// resume records nothing ([`MANUAL_NOW`]; `by_you`: your Send back).
-    fn resume_gate(
-        &mut self,
-        tab: &TabRecord,
-        findings: Option<&Path>,
-        by_you: bool,
-    ) -> Result<ResumeReady, String> {
-        let tag = tab
-            .bridge
-            .clone()
-            .ok_or_else(|| format!("{} does not report through the pipeline bridge", tab.label))?;
+    fn resume_gate(&mut self, tab: &TabRecord, findings: Option<&Path>, by_you: bool) -> Result<ResumeReady, String> {
+        let tag = tab.bridge.clone().ok_or_else(|| format!("{} does not report through the pipeline bridge", tab.label))?;
         let program = self
             .host
             .bridge_program()
@@ -1099,13 +851,7 @@ impl<H: Host> Actor<H> {
     }
 
     /// The resume itself, once [`Self::resume_gate`] let it through.
-    fn resume_ready(
-        &mut self,
-        tab: &TabRecord,
-        ready: ResumeReady,
-        session_id: &str,
-        prompt: &str,
-    ) -> Result<(), String> {
+    fn resume_ready(&mut self, tab: &TabRecord, ready: ResumeReady, session_id: &str, prompt: &str) -> Result<(), String> {
         let ResumeReady { tag, flags, cwd } = ready;
         let tag = &tag;
         let bridge = Some(flags);
@@ -1125,10 +871,7 @@ impl<H: Host> Actor<H> {
             // back by hand), unless a new one was written meanwhile.
             if let Some(saved) = cleared {
                 if let Err(restore) = restore_stage_turn(&runs, tag, &tab.id, &saved) {
-                    eprintln!(
-                        "DCTerminal: run {}: turn not restored: {restore}",
-                        self.run_id
-                    );
+                    eprintln!("DCTerminal: run {}: turn not restored: {restore}", self.run_id);
                 }
             }
             return Err(err);
@@ -1143,13 +886,8 @@ impl<H: Host> Actor<H> {
     /// engine note) also says what was not sent and where the findings are.
     fn note_not_resumed(&mut self, findings: Option<&Path>, by_you: bool) {
         let extra = match findings {
-            Some(file) => format!(
-                " This round's findings are in {}: send them back yourself.",
-                file.display()
-            ),
-            None if by_you => {
-                " Your Send back was not sent: press it again to send it.".to_string()
-            }
+            Some(file) => format!(" This round's findings are in {}: send them back yourself.", file.display()),
+            None if by_you => " Your Send back was not sent: press it again to send it.".to_string(),
             None => " What autopilot was sending back was not sent: send it yourself.".to_string(),
         };
         {
@@ -1188,28 +926,18 @@ impl<H: Host> Actor<H> {
     ) -> Result<String, String> {
         let existing = {
             let store = lock(self.host.store());
-            let run = store
-                .pipeline_run_by_id(&self.run_id)
-                .ok_or("the run is gone")?;
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
             let tab_ids = match placed.lane.as_deref().and_then(|id| run.lane(id)) {
                 Some(lane) => &lane.tab_ids,
                 None => &run.tab_ids,
             };
-            tab_ids
-                .get(&target.role_id)
-                .and_then(|id| store.tab_by_id(id))
-                .cloned()
+            tab_ids.get(&target.role_id).and_then(|id| store.tab_by_id(id)).cloned()
         };
-        let live = existing
-            .as_ref()
-            .is_some_and(|tab| self.host.terminal_live(&tab.id));
+        let live = existing.as_ref().is_some_and(|tab| self.host.terminal_live(&tab.id));
         let session = existing.as_ref().and_then(session_of);
         if let Some(tab) = existing.filter(|_| live || session.is_some()) {
             if live && !self.idle(&tab) {
-                return Err(format!(
-                    "{} is still working. Send the findings back when its turn ends.",
-                    tab.label
-                ));
+                return Err(format!("{} is still working. Send the findings back when its turn ends.", tab.label));
             }
             // The gate first: a resume it refuses sends nothing, so no round
             // is recorded as sent back.
@@ -1238,10 +966,7 @@ impl<H: Host> Actor<H> {
             return Ok(tab.id);
         }
         // The earlier stage's terminal is gone: a new one on the chain.
-        let role = self
-            .host
-            .role(&target.role_id)
-            .ok_or_else(|| format!("unknown role {}", target.role_id))?;
+        let role = self.host.role(&target.role_id).ok_or_else(|| format!("unknown role {}", target.role_id))?;
         let (values, handoff_plan) = match values {
             Some(values) => (values, handoff_plan.unwrap_or_default()),
             None => {
@@ -1250,10 +975,7 @@ impl<H: Host> Actor<H> {
                 (built.values, built.handoff_plan)
             }
         };
-        let target_index = placed
-            .def
-            .stage_index(&target.id)
-            .ok_or("that stage is not in the pipeline")?;
+        let target_index = placed.def.stage_index(&target.id).ok_or("that stage is not in the pipeline")?;
         let chain = ChainRef {
             chain_id: placed.chain.chain_id.clone(),
             kind: placed.chain.kind.clone(),
@@ -1282,24 +1004,14 @@ impl<H: Host> Actor<H> {
     /// write its run folder and start it through the host, with no store
     /// lock held across the spawn.
     fn open_stage(&mut self, open: Open) -> Result<String, String> {
-        let role = self
-            .host
-            .role(&open.role_id)
-            .ok_or_else(|| format!("unknown role {}", open.role_id))?;
+        let role = self.host.role(&open.role_id).ok_or_else(|| format!("unknown role {}", open.role_id))?;
         let cwd = crate::paths::validate_working_folder(&open.cwd).map_err(|err| err.message())?;
         let plan: BridgePlan = {
             let store = lock(self.host.store());
-            let run = store
-                .pipeline_run_by_id(&self.run_id)
-                .ok_or("the run is gone")?;
-            let def = crate::pipelines::find(&run.kind)
-                .ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
-            plan_for(run, &def, &open.chain, &open.role_id).ok_or_else(|| {
-                format!(
-                    "{} does not report through the pipeline bridge, so autopilot cannot follow it",
-                    role.name
-                )
-            })?
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
+            let def = crate::pipelines::find(&run.kind).ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
+            plan_for(run, &def, &open.chain, &open.role_id)
+                .ok_or_else(|| format!("{} does not report through the pipeline bridge, so autopilot cannot follow it", role.name))?
         };
         // D24 and hooks-off, as at every bridged start: an engine-1 outcome
         // switches the run for good and, mid-run, makes it manual (autopilot
@@ -1321,11 +1033,7 @@ impl<H: Host> Actor<H> {
         let preview = crate::template::merge_role_prompt_with(&role, &values, &instructions);
         if !preview.errors.is_empty() {
             let problems: Vec<String> = preview.errors.iter().map(|e| e.message.clone()).collect();
-            return Err(format!(
-                "the {} prompt is incomplete: {}",
-                role.name,
-                problems.join("; ")
-            ));
+            return Err(format!("the {} prompt is incomplete: {}", role.name, problems.join("; ")));
         }
         let merged = preview.merged.ok_or("the prompt merged to nothing")?;
         let prompt = crate::pty::launch::handoff_terminal_prompt(&merged.text, &open.handoff_plan);
@@ -1354,14 +1062,8 @@ impl<H: Host> Actor<H> {
                 },
             )?;
             match &open.tagging {
-                Tagging::Advance { text } => {
-                    store.set_tab_chain(&tab_id, Some(open.chain.clone()), Some(text))?
-                }
-                Tagging::LoopBack {
-                    reviewer_role,
-                    verdict,
-                    text,
-                } => {
+                Tagging::Advance { text } => store.set_tab_chain(&tab_id, Some(open.chain.clone()), Some(text))?,
+                Tagging::LoopBack { reviewer_role, verdict, text } => {
                     store.chain_loop_back_in(
                         &open.chain.chain_id,
                         open.chain.lane.as_deref(),
@@ -1378,19 +1080,13 @@ impl<H: Host> Actor<H> {
         };
         let bridge = match &plan {
             Some(plan) => {
-                let program = self.host.bridge_program().ok_or(
-                    "DCTerminal could not find its own executable for the pipeline bridge.",
-                )?;
+                let program = self
+                    .host
+                    .bridge_program()
+                    .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
                 let run_dir = prepare_stage(&self.host.runs_root(), plan, &tab_id)?;
                 write_run_repos(&run_dir, &repos)?;
-                Some(launch_flags(
-                    plan.kind,
-                    &program,
-                    &run_dir,
-                    &plan.run_id,
-                    &plan.stage_key,
-                    &tab_id,
-                ))
+                Some(launch_flags(plan.kind, &program, &run_dir, &plan.run_id, &plan.stage_key, &tab_id))
             }
             None => None,
         };
@@ -1425,12 +1121,8 @@ impl<H: Host> Actor<H> {
         let repos = self.host.repos();
         let (tab, role_id, title) = {
             let mut store = lock(self.host.store());
-            let run = store
-                .pipeline_run_by_id(&self.run_id)
-                .ok_or("the run is gone")?;
-            let lane = run
-                .lane(lane_id)
-                .ok_or_else(|| format!("no lane {lane_id}"))?;
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
+            let lane = run.lane(lane_id).ok_or_else(|| format!("no lane {lane_id}"))?;
             // A gate refusal for an earlier lane switched the run to engine 1
             // (manual, V2a): this lane waits for you to start it.
             if lane.status != "waiting" || run.engine < crate::bridge::launch::ENGINE_V2 {
@@ -1444,8 +1136,7 @@ impl<H: Host> Actor<H> {
                     ));
                 }
             }
-            let def = crate::pipelines::find(&run.kind)
-                .ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
+            let def = crate::pipelines::find(&run.kind).ok_or_else(|| format!("unknown pipeline {}", run.kind))?;
             let role_id = run
                 .fan_out_stage
                 .as_deref()
@@ -1453,35 +1144,21 @@ impl<H: Host> Actor<H> {
                 .or_else(|| implementer_stage(&def))
                 .map(|s| s.role_id.clone())
                 .ok_or_else(|| format!("{} has no Implementer stage to fan out at", def.name))?;
-            let tab_id = lane
-                .tab_ids
-                .get(&role_id)
-                .cloned()
-                .ok_or_else(|| format!("{} has no {role_id} tab", lane.title))?;
-            let tab = store
-                .tab_by_id(&tab_id)
-                .cloned()
-                .ok_or_else(|| format!("{}'s tab is closed", lane.title))?;
+            let tab_id = lane.tab_ids.get(&role_id).cloned().ok_or_else(|| format!("{} has no {role_id} tab", lane.title))?;
+            let tab = store.tab_by_id(&tab_id).cloned().ok_or_else(|| format!("{}'s tab is closed", lane.title))?;
             let title = lane.title.clone();
             set_lane_status(&mut store, &self.run_id, lane_id, "active")?;
             (tab, role_id, title)
         };
         self.changed();
-        let chain = tab
-            .chain
-            .clone()
-            .ok_or_else(|| format!("{title}'s tab is not on the run"))?;
+        let chain = tab.chain.clone().ok_or_else(|| format!("{title}'s tab is not on the run"))?;
         let mut values = tab.answers.clone();
         values.insert("cwd".to_string(), tab.cwd.clone());
         // A plan too long for the form waits in the run folder.
-        let cut = values
-            .values()
-            .any(|v| v.starts_with("The full text (") && v.contains("follows"));
+        let cut = values.values().any(|v| v.starts_with("The full text (") && v.contains("follows"));
         let handoff_plan = if cut {
             crate::bridge::folder::run_dir(&self.host.runs_root(), &self.run_id)
-                .and_then(|dir| {
-                    std::fs::read_to_string(dir.join(crate::bridge::folder::PLAN_FILE)).ok()
-                })
+                .and_then(|dir| std::fs::read_to_string(dir.join(crate::bridge::folder::PLAN_FILE)).ok())
                 .unwrap_or_default()
         } else {
             String::new()
@@ -1530,14 +1207,7 @@ impl<H: Host> Actor<H> {
                 handoff_plan,
                 handoff_text,
                 force,
-            } => self.user_send(
-                &source_tab_id,
-                &target_role_id,
-                values,
-                handoff_plan,
-                handoff_text,
-                force,
-            ),
+            } => self.user_send(&source_tab_id, &target_role_id, values, handoff_plan, handoff_text, force),
             UserAction::SendBack {
                 source_tab_id,
                 target_role_id,
@@ -1546,15 +1216,7 @@ impl<H: Host> Actor<H> {
                 values,
                 handoff_plan,
                 force,
-            } => self.user_send_back(
-                &source_tab_id,
-                &target_role_id,
-                &text,
-                verdict,
-                values,
-                handoff_plan,
-                force,
-            ),
+            } => self.user_send_back(&source_tab_id, &target_role_id, &text, verdict, values, handoff_plan, force),
             UserAction::Approve { lane } => self.user_approve(lane.as_deref()),
             UserAction::Continue => self.user_continue(),
             UserAction::TakeOver { tab_id } => self.user_take_over(&tab_id),
@@ -1568,33 +1230,19 @@ impl<H: Host> Actor<H> {
                 back,
                 force,
             } => {
-                let placed = self
-                    .place_tab(&source_tab_id)
-                    .ok_or("That tab is not on this run.")?;
+                let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
                 match self.claim_for_you(&placed, if back { "back" } else { "advance" }, force) {
                     Ok(_) => Ok(UserOutcome::default()),
                     Err(outcome) => Ok(outcome),
                 }
             }
-            UserAction::ReleaseHandoff {
-                source_tab_id,
-                back,
-            } => {
-                let placed = self
-                    .place_tab(&source_tab_id)
-                    .ok_or("That tab is not on this run.")?;
+            UserAction::ReleaseHandoff { source_tab_id, back } => {
+                let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
                 let key = {
                     let store = lock(self.host.store());
-                    let run = store
-                        .pipeline_run_by_id(&self.run_id)
-                        .ok_or("unknown pipeline run")?;
+                    let run = store.pipeline_run_by_id(&self.run_id).ok_or("unknown pipeline run")?;
                     let lane = placed.lane.as_deref();
-                    claim_key(
-                        if back { "back" } else { "advance" },
-                        &placed.stage.id,
-                        run.round_for(lane),
-                        lane,
-                    )
+                    claim_key(if back { "back" } else { "advance" }, &placed.stage.id, run.round_for(lane), lane)
                 };
                 self.release(&key);
                 Ok(UserOutcome::default())
@@ -1604,38 +1252,23 @@ impl<H: Host> Actor<H> {
 
     /// The next stage's form as the run folder fills it (D20): what a Send
     /// with no values of yours would carry.
-    fn user_prefill(
-        &mut self,
-        source_tab_id: &str,
-        target_role_id: &str,
-    ) -> Result<UserOutcome, String> {
-        let placed = self
-            .place_tab(source_tab_id)
-            .ok_or("That tab is not on this run.")?;
+    fn user_prefill(&mut self, source_tab_id: &str, target_role_id: &str) -> Result<UserOutcome, String> {
+        let placed = self.place_tab(source_tab_id).ok_or("That tab is not on this run.")?;
         let target = placed
             .def
             .stages
             .get(placed.index + 1)
             .filter(|stage| stage.role_id == target_role_id)
             .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "{target_role_id} is not the stage after {}.",
-                    placed.stage.title
-                )
-            })?;
-        let role = self
-            .host
-            .role(&target.role_id)
-            .ok_or_else(|| format!("unknown role {}", target.role_id))?;
+            .ok_or_else(|| format!("{target_role_id} is not the stage after {}.", placed.stage.title))?;
+        let role = self.host.role(&target.role_id).ok_or_else(|| format!("unknown role {}", target.role_id))?;
         let turn = placed
             .tab
             .bridge
             .as_ref()
             .and_then(|tag| read_stage_turn(&self.host.runs_root(), tag, &placed.tab.id));
         let sources = self.sources(&placed, &target, turn.as_ref(), None);
-        let mut built =
-            prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
+        let mut built = prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
         built.values.remove("cwd");
         Ok(UserOutcome {
             prefill: Some(Box::new(Prefill {
@@ -1649,26 +1282,13 @@ impl<H: Host> Actor<H> {
     /// Records your hand-off (`advance` / `back`) from `placed`'s stage in
     /// this round. `Err(outcome)` when autopilot made it already and you
     /// have not pressed again (`force`).
-    fn claim_for_you(
-        &mut self,
-        placed: &Placed,
-        kind: &str,
-        force: bool,
-    ) -> Result<String, UserOutcome> {
+    fn claim_for_you(&mut self, placed: &Placed, kind: &str, force: bool) -> Result<String, UserOutcome> {
         let mut store = lock(self.host.store());
         let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
             return Err(UserOutcome::default());
         };
-        let key = claim_key(
-            kind,
-            &placed.stage.id,
-            run.round_for(placed.lane.as_deref()),
-            placed.lane.as_deref(),
-        );
-        if let Some(made) = run
-            .claim_for(&key, None)
-            .filter(|made| made.by == "autopilot")
-        {
+        let key = claim_key(kind, &placed.stage.id, run.round_for(placed.lane.as_deref()), placed.lane.as_deref());
+        if let Some(made) = run.claim_for(&key, None).filter(|made| made.by == "autopilot") {
             if !force {
                 let (what, again) = if kind == "back" {
                     ("sent this round back", "send it back")
@@ -1686,10 +1306,7 @@ impl<H: Host> Actor<H> {
         }
         run.add_claim(key.clone(), None, "you");
         if let Err(err) = store.save() {
-            eprintln!(
-                "DCTerminal: run {}: hand-off not recorded: {err}",
-                self.run_id
-            );
+            eprintln!("DCTerminal: run {}: hand-off not recorded: {err}", self.run_id);
         }
         Ok(key)
     }
@@ -1710,9 +1327,7 @@ impl<H: Host> Actor<H> {
         handoff_text: Option<String>,
         force: bool,
     ) -> Result<UserOutcome, String> {
-        let placed = self
-            .place_tab(source_tab_id)
-            .ok_or("That tab is not on this run.")?;
+        let placed = self.place_tab(source_tab_id).ok_or("That tab is not on this run.")?;
         let target_index = placed.index + 1;
         let target = placed
             .def
@@ -1720,16 +1335,8 @@ impl<H: Host> Actor<H> {
             .get(target_index)
             .filter(|stage| stage.role_id == target_role_id)
             .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "{target_role_id} is not the stage after {}.",
-                    placed.stage.title
-                )
-            })?;
-        let role = self
-            .host
-            .role(&target.role_id)
-            .ok_or_else(|| format!("unknown role {}", target.role_id))?;
+            .ok_or_else(|| format!("{target_role_id} is not the stage after {}.", placed.stage.title))?;
+        let role = self.host.role(&target.role_id).ok_or_else(|| format!("unknown role {}", target.role_id))?;
         let key = match self.claim_for_you(&placed, "advance", force) {
             Ok(key) => key,
             Err(outcome) => return Ok(outcome),
@@ -1744,8 +1351,7 @@ impl<H: Host> Actor<H> {
             }
             None => {
                 let sources = self.sources(&placed, &target, None, None);
-                let built =
-                    prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
+                let built = prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
                 (built.values, built.handoff_plan, built.handoff_text)
             }
         };
@@ -1790,9 +1396,7 @@ impl<H: Host> Actor<H> {
         handoff_plan: Option<String>,
         force: bool,
     ) -> Result<UserOutcome, String> {
-        let placed = self
-            .place_tab(source_tab_id)
-            .ok_or("That tab is not on this run.")?;
+        let placed = self.place_tab(source_tab_id).ok_or("That tab is not on this run.")?;
         if text.trim().is_empty() {
             return Err("There are no findings to send back.".into());
         }
@@ -1803,12 +1407,7 @@ impl<H: Host> Actor<H> {
             .take(placed.index)
             .find(|stage| stage.role_id == target_role_id)
             .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "{target_role_id} is not an earlier stage than {}.",
-                    placed.stage.title
-                )
-            })?;
+            .ok_or_else(|| format!("{target_role_id} is not an earlier stage than {}.", placed.stage.title))?;
         let key = match self.claim_for_you(&placed, "back", force) {
             Ok(key) => key,
             Err(outcome) => return Ok(outcome),
@@ -1816,17 +1415,7 @@ impl<H: Host> Actor<H> {
         let verdict = verdict
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| placed.revise().to_string());
-        match self.send_back(
-            &placed,
-            &target,
-            &verdict,
-            text,
-            values,
-            handoff_plan,
-            None,
-            None,
-            true,
-        ) {
+        match self.send_back(&placed, &target, &verdict, text, values, handoff_plan, None, None, true) {
             Ok(tab_id) => Ok(UserOutcome {
                 tab_id: Some(tab_id),
                 ..UserOutcome::default()
@@ -1854,10 +1443,7 @@ impl<H: Host> Actor<H> {
             }
         }
         if !failed.is_empty() {
-            return Err(format!(
-                "Marked approved, but did not start {}",
-                failed.join("; ")
-            ));
+            return Err(format!("Marked approved, but did not start {}", failed.join("; ")));
         }
         Ok(UserOutcome {
             complete: result.complete,
@@ -1897,51 +1483,27 @@ impl<H: Host> Actor<H> {
         let (placed, tag) = self.bridged_tab(tab_id)?;
         let before = {
             let store = lock(self.host.store());
-            store
-                .pipeline_run_by_id(&self.run_id)
-                .ok_or("the run is gone")?
-                .clone()
+            store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?.clone()
         };
         let enabled = before.autopilot.as_ref().is_some_and(|a| a.enabled);
-        let was = if enabled {
-            StageMode::Autopilot
-        } else {
-            StageMode::Manual
-        };
+        let was = if enabled { StageMode::Autopilot } else { StageMode::Manual };
         if !set_stage_mode(&self.host.runs_root(), &tag, tab_id, StageMode::Takeover)? {
             return Err(format!("{} no longer holds its stage.", placed.tab.label));
         }
         {
             let mut store = lock(self.host.store());
-            let run = store
-                .pipeline_run_by_id_mut(&self.run_id)
-                .ok_or("the run is gone")?;
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
             if !run.taken_over.iter().any(|id| id == tab_id) {
                 run.taken_over.push(tab_id.to_string());
             }
-            let summary = format!(
-                "You took over {}. Autopilot leaves it alone until you hand it back.",
-                placed.stage.title
-            );
-            run.log(
-                "note",
-                Some(&placed.stage.id),
-                Some(&placed.tab.role_id),
-                summary,
-                None,
-            );
+            let summary = format!("You took over {}. Autopilot leaves it alone until you hand it back.", placed.stage.title);
+            run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
             let current = crate::pipelines::recovery::current_stage_tabs(&placed.def, run);
-            let all_yours = !current.is_empty()
-                && current
-                    .iter()
-                    .all(|stage| run.taken_over.contains(&stage.tab_id));
+            let all_yours = !current.is_empty() && current.iter().all(|stage| run.taken_over.contains(&stage.tab_id));
             if run.status == RunStatus::Running && all_yours {
                 run.set_waiting(
                     StopReason::TakenOver,
-                    format!(
-                        "You took over {}. Hand it back to let autopilot carry on.",
-                        placed.stage.title
-                    ),
+                    format!("You took over {}. Hand it back to let autopilot carry on.", placed.stage.title),
                 );
             }
             if let Err(err) = store.save() {
@@ -1961,70 +1523,36 @@ impl<H: Host> Actor<H> {
         let (placed, tag) = self.bridged_tab(tab_id)?;
         let (enabled, before) = {
             let store = lock(self.host.store());
-            let run = store
-                .pipeline_run_by_id(&self.run_id)
-                .ok_or("the run is gone")?;
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
             if !run.taken_over.iter().any(|id| id == tab_id) {
                 return Ok(UserOutcome::default());
             }
-            (
-                run.autopilot.as_ref().is_some_and(|a| a.enabled),
-                run.clone(),
-            )
+            (run.autopilot.as_ref().is_some_and(|a| a.enabled), run.clone())
         };
-        let mode = if enabled {
-            StageMode::Autopilot
-        } else {
-            StageMode::Manual
-        };
+        let mode = if enabled { StageMode::Autopilot } else { StageMode::Manual };
         set_stage_mode(&self.host.runs_root(), &tag, tab_id, mode)?;
-        let turn = read_stage_turn(&self.host.runs_root(), &tag, tab_id)
-            .filter(|turn| turn.result.is_some());
+        let turn = read_stage_turn(&self.host.runs_root(), &tag, tab_id).filter(|turn| turn.result.is_some());
         let (status, round, decided, others) = {
             let mut store = lock(self.host.store());
-            let run = store
-                .pipeline_run_by_id_mut(&self.run_id)
-                .ok_or("the run is gone")?;
+            let run = store.pipeline_run_by_id_mut(&self.run_id).ok_or("the run is gone")?;
             run.taken_over.retain(|id| id != tab_id);
             let summary = format!("You handed {} back to autopilot.", placed.stage.title);
-            run.log(
-                "note",
-                Some(&placed.stage.id),
-                Some(&placed.tab.role_id),
-                summary,
-                None,
-            );
+            run.log("note", Some(&placed.stage.id), Some(&placed.tab.role_id), summary, None);
             let current = crate::pipelines::recovery::current_stage_tabs(&placed.def, run);
-            let still_yours = current
-                .iter()
-                .any(|stage| run.taken_over.contains(&stage.tab_id));
+            let still_yours = current.iter().any(|stage| run.taken_over.contains(&stage.tab_id));
             // The current stages' finished turns, decided again below: one
             // whose decision waited on this stage (D28) is carried out now.
             let mut others = Vec::new();
-            if run.status == RunStatus::Waiting
-                && run.stop_reason == Some(StopReason::TakenOver)
-                && !still_yours
-            {
+            if run.status == RunStatus::Waiting && run.stop_reason == Some(StopReason::TakenOver) && !still_yours {
                 run.set_running();
-                others = current
-                    .into_iter()
-                    .map(|stage| stage.tab_id)
-                    .filter(|id| id != tab_id)
-                    .collect();
+                others = current.into_iter().map(|stage| stage.tab_id).filter(|id| id != tab_id).collect();
             }
             // A turn decided before you took over is not decided (or checked) again.
             let decided = turn.as_ref().is_some_and(|turn| {
                 let key = format!("{}|bridge|{}", turn.tab_id, turn.turn);
-                run.autopilot
-                    .as_ref()
-                    .is_some_and(|a| a.decided.contains(&key))
+                run.autopilot.as_ref().is_some_and(|a| a.decided.contains(&key))
             });
-            let state = (
-                run.status,
-                run.round_for(placed.lane.as_deref()),
-                decided,
-                others,
-            );
+            let state = (run.status, run.round_for(placed.lane.as_deref()), decided, others);
             if let Err(err) = store.save() {
                 self.undo_mode_change(&mut store, before, &tag, tab_id, StageMode::Takeover);
                 return Err(err);
@@ -2047,9 +1575,7 @@ impl<H: Host> Actor<H> {
         // here is newer than the round's, you dealt with it: the round is
         // recorded, not sent, and your turn is decided next (D28).
         let runs = self.host.runs_root();
-        self.revised = own
-            .as_ref()
-            .map(|turn| (tab_id.to_string(), turn.ended_at.clone()));
+        self.revised = own.as_ref().map(|turn| (tab_id.to_string(), turn.ended_at.clone()));
         self.round_goes_back = false;
         for other in others {
             let tag = {
@@ -2075,9 +1601,7 @@ impl<H: Host> Actor<H> {
         }
         let (status, round) = {
             let store = lock(self.host.store());
-            let run = store
-                .pipeline_run_by_id(&self.run_id)
-                .ok_or("the run is gone")?;
+            let run = store.pipeline_run_by_id(&self.run_id).ok_or("the run is gone")?;
             (run.status, run.round_for(placed.lane.as_deref()))
         };
         self.handled.insert(own.tab_id.clone(), own.turn.clone());
@@ -2087,14 +1611,7 @@ impl<H: Host> Actor<H> {
 
     /// Take over or Hand back could not save the run: put the run and the
     /// stage's `mode` file back as they were, so the two never disagree.
-    fn undo_mode_change(
-        &self,
-        store: &mut StateStore,
-        before: PipelineRun,
-        tag: &BridgeTag,
-        tab_id: &str,
-        was: StageMode,
-    ) {
+    fn undo_mode_change(&self, store: &mut StateStore, before: PipelineRun, tag: &BridgeTag, tab_id: &str, was: StageMode) {
         if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
             *run = before;
         }
@@ -2103,15 +1620,12 @@ impl<H: Host> Actor<H> {
 
     /// `tab_id` on this run, with the stage it reports for.
     fn bridged_tab(&self, tab_id: &str) -> Result<(Placed, BridgeTag), String> {
-        let placed = self
-            .place_tab(tab_id)
-            .ok_or("That tab is not on this run.")?;
-        let tag = placed.tab.bridge.clone().ok_or_else(|| {
-            format!(
-                "{} does not report through the pipeline bridge.",
-                placed.tab.label
-            )
-        })?;
+        let placed = self.place_tab(tab_id).ok_or("That tab is not on this run.")?;
+        let tag = placed
+            .tab
+            .bridge
+            .clone()
+            .ok_or_else(|| format!("{} does not report through the pipeline bridge.", placed.tab.label))?;
         Ok((placed, tag))
     }
 
@@ -2130,8 +1644,7 @@ impl<H: Host> Actor<H> {
             let Some(run) = store.pipeline_run_by_id(&self.run_id) else {
                 return;
             };
-            let on = run.status == RunStatus::Running
-                && run.autopilot.as_ref().is_some_and(|a| a.enabled);
+            let on = run.status == RunStatus::Running && run.autopilot.as_ref().is_some_and(|a| a.enabled);
             on && crate::pipelines::recovery::current_stage_tabs(&placed.def, run)
                 .iter()
                 .any(|stage| stage.tab_id == tab_id)
@@ -2143,9 +1656,7 @@ impl<H: Host> Actor<H> {
         if !current || finished {
             return;
         }
-        let code = code
-            .map(|c| format!(" (exit code {c})"))
-            .unwrap_or_default();
+        let code = code.map(|c| format!(" (exit code {c})")).unwrap_or_default();
         let summary = format!(
             "{} exited{code} before it finished its turn. Restart it, then carry on by hand.",
             placed.tab.label
@@ -2176,19 +1687,14 @@ pub(super) fn reviews_plan(def: &PipelineDef, stage: &StageDef) -> bool {
     }
     let reviewed = match &stage.loop_back {
         Some(back) => def.stage(&back.to),
-        None => def
-            .stage_index(&stage.id)
-            .and_then(|i| i.checked_sub(1))
-            .and_then(|i| def.stages.get(i)),
+        None => def.stage_index(&stage.id).and_then(|i| i.checked_sub(1)).and_then(|i| def.stages.get(i)),
     };
     reviewed.is_some_and(|s| s.kind() == StageKind::Planner)
 }
 
 /// The pipeline's first Implementer stage (by kind): where fan-out lanes start.
 pub(super) fn implementer_stage(def: &PipelineDef) -> Option<&StageDef> {
-    def.stages
-        .iter()
-        .find(|s| s.kind() == StageKind::Implementer)
+    def.stages.iter().find(|s| s.kind() == StageKind::Implementer)
 }
 
 /// A `submit_result` verdict in the words the ledger and `decide` use.
@@ -2203,23 +1709,13 @@ pub(super) fn bridge_verdict(verdict: Option<&str>, revise: &str) -> Option<Stri
 
 /// A reviewer's accepted result (verdict and findings), if this turn has one.
 fn review(turn: &BridgeTurn) -> Option<&Value> {
-    let result = (turn.outcome == TurnOutcome::Result)
-        .then_some(turn.result.as_ref())
-        .flatten()?;
+    let result = (turn.outcome == TurnOutcome::Result).then_some(turn.result.as_ref()).flatten()?;
     result.get("verdict").is_some().then_some(result)
 }
 
 /// The report a bridged stage's turn is decided on (`bridgeTurnReport` before V3).
-pub(super) fn turn_report(
-    stage: &StageDef,
-    turn: &BridgeTurn,
-    usage: Option<u8>,
-    lane: Option<String>,
-    revise: &str,
-) -> TurnReport {
-    let result = (turn.outcome == TurnOutcome::Result)
-        .then_some(turn.result.as_ref())
-        .flatten();
+pub(super) fn turn_report(stage: &StageDef, turn: &BridgeTurn, usage: Option<u8>, lane: Option<String>, revise: &str) -> TurnReport {
+    let result = (turn.outcome == TurnOutcome::Result).then_some(turn.result.as_ref()).flatten();
     let review = review(turn);
     let findings = review
         .and_then(|r| r.get("findings"))
@@ -2228,28 +1724,15 @@ pub(super) fn turn_report(
             items
                 .iter()
                 .map(|f| FindingReport {
-                    severity: f
-                        .get("severity")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    summary: f
-                        .get("summary")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
+                    severity: f.get("severity").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    summary: f.get("summary").and_then(Value::as_str).unwrap_or_default().to_string(),
                 })
                 .collect()
         })
         .unwrap_or_default();
     TurnReport {
         stage_id: stage.id.clone(),
-        verdict: bridge_verdict(
-            review
-                .and_then(|r| r.get("verdict"))
-                .and_then(Value::as_str),
-            revise,
-        ),
+        verdict: bridge_verdict(review.and_then(|r| r.get("verdict")).and_then(Value::as_str), revise),
         findings,
         findings_known: result.is_some(),
         usage_percent: usage,
@@ -2265,9 +1748,7 @@ pub(super) fn turn_report(
 /// Why a bridged Implementer is blocked (`submit_result` `blocked`, V2b):
 /// the run waits for you with that reason (`checkpoint`) and runs no checks.
 pub(super) fn blocked(turn: &BridgeTurn) -> Option<String> {
-    let result = (turn.outcome == TurnOutcome::Result)
-        .then_some(turn.result.as_ref())
-        .flatten()?;
+    let result = (turn.outcome == TurnOutcome::Result).then_some(turn.result.as_ref()).flatten()?;
     result.get("prs")?;
     result
         .get("blocked")
@@ -2284,16 +1765,8 @@ pub(super) fn findings_text(findings: &[Value]) -> String {
         .enumerate()
         .map(|(i, f)| {
             let text = |key: &str| f.get(key).and_then(Value::as_str).unwrap_or_default();
-            let file = Some(text("file"))
-                .filter(|f| !f.is_empty())
-                .map(|f| format!(" {f}:"))
-                .unwrap_or_default();
-            format!(
-                "{}. [{}]{file} {}",
-                i + 1,
-                text("severity"),
-                text("summary")
-            )
+            let file = Some(text("file")).filter(|f| !f.is_empty()).map(|f| format!(" {f}:")).unwrap_or_default();
+            format!("{}. [{}]{file} {}", i + 1, text("severity"), text("summary"))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -2315,18 +1788,9 @@ pub(super) fn loop_back_message(
     round: u32,
     file: Option<&std::path::Path>,
 ) -> String {
-    let ask = if to_planner {
-        PLANNER_ASK
-    } else {
-        IMPLEMENTER_ASK
-    };
-    let saved = file
-        .map(|path| format!(", saved in {}", path.display()))
-        .unwrap_or_default();
-    format!(
-        "Review findings from the {reviewer_name} (round {round}){saved}:\n\n{}\n\n{ask}",
-        findings.trim()
-    )
+    let ask = if to_planner { PLANNER_ASK } else { IMPLEMENTER_ASK };
+    let saved = file.map(|path| format!(", saved in {}", path.display())).unwrap_or_default();
+    format!("Review findings from the {reviewer_name} (round {round}){saved}:\n\n{}\n\n{ask}", findings.trim())
 }
 
 /// The Claude session `tab`'s terminal runs, when one is saved.
@@ -2346,12 +1810,7 @@ pub(super) fn pr_urls(turn: &BridgeTurn) -> Vec<String> {
         .filter(|_| turn.outcome == TurnOutcome::Result)
         .and_then(|r| r.get("prs"))
         .and_then(Value::as_array)
-        .map(|prs| {
-            prs.iter()
-                .filter_map(|p| p.get("url").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
+        .map(|prs| prs.iter().filter_map(|p| p.get("url").and_then(Value::as_str)).map(str::to_string).collect())
         .unwrap_or_default();
     if !reported.is_empty() {
         return reported;
@@ -2367,11 +1826,7 @@ pub(super) fn github_pr_urls(text: &str) -> Vec<String> {
     while let Some(at) = rest.find(START) {
         let tail = &rest[at + START.len()..];
         let parts: Vec<&str> = tail.splitn(4, '/').collect();
-        let ok_part = |p: &str| {
-            !p.is_empty()
-                && p.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
-        };
+        let ok_part = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c));
         if parts.len() >= 4 && ok_part(parts[0]) && ok_part(parts[1]) && parts[2] == "pull" {
             let digits: String = parts[3].chars().take_while(char::is_ascii_digit).collect();
             if !digits.is_empty() {
@@ -2391,11 +1846,7 @@ fn lane_note(run_dir: Option<&std::path::Path>, lane: &str) -> Option<String> {
     let tasks: crate::bridge::RunTasks = read_json(&run_dir?.join(TASKS_FILE))?;
     let task = tasks.tasks.iter().find(|t| t.id == lane)?;
     // L1: a lane made in another repo says which, so its stages know.
-    let repo = task
-        .repo
-        .as_deref()
-        .map(|repo| format!(" in the {repo} repo"))
-        .unwrap_or_default();
+    let repo = task.repo.as_deref().map(|repo| format!(" in the {repo} repo")).unwrap_or_default();
     Some(format!(
         "This run ships as several pull requests. Implement only {} ({}){repo}: {}",
         task.id.to_uppercase(),
@@ -2406,26 +1857,13 @@ fn lane_note(run_dir: Option<&std::path::Path>, lane: &str) -> Option<String> {
 
 /// The tab you took over that carrying `decision` out would act on (D28):
 /// the stage a round goes back to, or the turn's own stage for a retry. As (tab id, stage id, stage title).
-fn taken_over_target(
-    def: &PipelineDef,
-    run: &PipelineRun,
-    placed: &Placed,
-    decision: &Decision,
-) -> Option<(String, String, String)> {
+fn taken_over_target(def: &PipelineDef, run: &PipelineRun, placed: &Placed, decision: &Decision) -> Option<(String, String, String)> {
     let target = match decision.action.as_str() {
         "loopBack" => {
             let stage = def.stage(decision.stage_id.as_deref()?)?;
-            (
-                loop_back_tab(def, run, placed, decision)?,
-                stage.id.clone(),
-                stage.title.clone(),
-            )
+            (loop_back_tab(def, run, placed, decision)?, stage.id.clone(), stage.title.clone())
         }
-        "retry" => (
-            placed.tab.id.clone(),
-            placed.stage.id.clone(),
-            placed.stage.title.clone(),
-        ),
+        "retry" => (placed.tab.id.clone(), placed.stage.id.clone(), placed.stage.title.clone()),
         _ => return None,
     };
     run.taken_over.contains(&target.0).then_some(target)
@@ -2433,12 +1871,7 @@ fn taken_over_target(
 
 /// The tab a loop-back `decision` sends its round to: the target stage's
 /// tab on the run, or on the turn's lane (as `send_back` looks it up).
-fn loop_back_tab(
-    def: &PipelineDef,
-    run: &PipelineRun,
-    placed: &Placed,
-    decision: &Decision,
-) -> Option<String> {
+fn loop_back_tab(def: &PipelineDef, run: &PipelineRun, placed: &Placed, decision: &Decision) -> Option<String> {
     let stage = def.stage(decision.stage_id.as_deref()?)?;
     let tab_ids = match placed.lane.as_deref().and_then(|id| run.lane(id)) {
         Some(lane) => &lane.tab_ids,
@@ -2449,10 +1882,7 @@ fn loop_back_tab(
 
 /// `later` ended after `earlier` (RFC 3339 times; text order if unreadable).
 fn ended_after(later: &str, earlier: &str) -> bool {
-    match (
-        chrono::DateTime::parse_from_rfc3339(later),
-        chrono::DateTime::parse_from_rfc3339(earlier),
-    ) {
+    match (chrono::DateTime::parse_from_rfc3339(later), chrono::DateTime::parse_from_rfc3339(earlier)) {
         (Ok(later), Ok(earlier)) => later > earlier,
         _ => later > earlier,
     }

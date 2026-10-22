@@ -176,11 +176,7 @@ pub struct PipelineRun {
     #[serde(default, deserialize_with = "lenient_status")]
     pub status: RunStatus,
     /// Why the run is `waiting` (or `stopped`, when you turned autopilot off).
-    #[serde(
-        default,
-        deserialize_with = "lenient_stop_reason",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, deserialize_with = "lenient_stop_reason", skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
     /// Pipeline engine (D19). New runs are 2: their reviewer stages report
     /// through the bridge (ADR-015). Runs saved before engines existed read
@@ -302,9 +298,7 @@ fn lenient_status<'de, D: serde::Deserializer<'de>>(de: D) -> Result<RunStatus, 
 }
 
 /// A reason code written by a newer build reads as none, never a failed load.
-fn lenient_stop_reason<'de, D: serde::Deserializer<'de>>(
-    de: D,
-) -> Result<Option<StopReason>, D::Error> {
+fn lenient_stop_reason<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<StopReason>, D::Error> {
     let value = serde_json::Value::deserialize(de)?;
     Ok(serde_json::from_value(value).ok())
 }
@@ -488,9 +482,7 @@ impl PipelineRun {
         if self.status == RunStatus::Complete || !enabled {
             return;
         }
-        self.autopilot
-            .get_or_insert_with(RunAutopilot::default)
-            .waiting = Some(why.into());
+        self.autopilot.get_or_insert_with(RunAutopilot::default).waiting = Some(why.into());
         self.status = RunStatus::Waiting;
         self.stop_reason = Some(reason);
     }
@@ -507,14 +499,7 @@ impl PipelineRun {
     ) {
         let why = why.into();
         self.set_waiting(reason, why.clone());
-        self.log_outcome(
-            "stop",
-            stage_id,
-            role_id,
-            why,
-            detail,
-            Some(reason.as_str().to_string()),
-        );
+        self.log_outcome("stop", stage_id, role_id, why, detail, Some(reason.as_str().to_string()));
     }
 
     /// Autopilot acts again: `running` while it is on. Clears what it was
@@ -607,11 +592,7 @@ impl PipelineRun {
     /// from its sentence); else running when autopilot was on; else stopped
     /// (paused by you when autopilot had been turned on before).
     pub fn migrated_status(&self) -> (RunStatus, Option<StopReason>) {
-        let last = |kinds: &[&str]| {
-            self.events
-                .iter()
-                .rposition(|e| kinds.contains(&e.kind.as_str()))
-        };
+        let last = |kinds: &[&str]| self.events.iter().rposition(|e| kinds.contains(&e.kind.as_str()));
         if let Some(done) = last(&["complete"]) {
             if last(&["handoff", "loopBack"]).is_none_or(|moved| moved < done) {
                 return (RunStatus::Complete, None);
@@ -707,10 +688,7 @@ impl PipelineRun {
             let chars = text.chars().count();
             if chars > MAX_EVENT_DETAIL_CHARS {
                 let kept: String = text.chars().take(MAX_EVENT_DETAIL_CHARS).collect();
-                format!(
-                    "{kept}\n… ({} more characters)",
-                    chars - MAX_EVENT_DETAIL_CHARS
-                )
+                format!("{kept}\n… ({} more characters)", chars - MAX_EVENT_DETAIL_CHARS)
             } else {
                 text
             }
@@ -919,10 +897,7 @@ pub struct ClosedTabRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<crate::provider::ProviderId>,
     /// Session id per provider (the legacy single id lands in `cursor`).
-    #[serde(
-        default,
-        skip_serializing_if = "crate::provider::ProviderSessions::is_empty"
-    )]
+    #[serde(default, skip_serializing_if = "crate::provider::ProviderSessions::is_empty")]
     pub sessions: crate::provider::ProviderSessions,
     /// Shown once, then cleared. Migration and config-dir mismatch use this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -990,10 +965,7 @@ pub struct TabRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<crate::provider::ProviderId>,
     /// Session id per provider (the legacy single id lands in `cursor`).
-    #[serde(
-        default,
-        skip_serializing_if = "crate::provider::ProviderSessions::is_empty"
-    )]
+    #[serde(default, skip_serializing_if = "crate::provider::ProviderSessions::is_empty")]
     pub sessions: crate::provider::ProviderSessions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_notice: Option<String>,

@@ -329,11 +329,7 @@ fn load_caches(dir: &Path) -> ProviderModelCaches {
     let Ok(mut file) = read_json::<ProviderModelCaches>(&path) else {
         return ProviderModelCaches::default();
     };
-    if file
-        .cursor
-        .as_ref()
-        .is_none_or(|cache| cache.models.is_empty())
-        && !file.models.is_empty()
+    if file.cursor.as_ref().is_none_or(|cache| cache.models.is_empty()) && !file.models.is_empty()
     {
         file.cursor = Some(ModelCache {
             fetched_at_ms: file.fetched_at_ms.unwrap_or(0),
@@ -879,7 +875,10 @@ Tip: use --model <id> to pick one\n";
             ("composer-2.5".into(), "Composer".into()),
         ]);
         assert_eq!(listed[1].id, "opus[1m]");
-        assert_eq!(listed[2].badge.as_deref(), Some("may use usage credits"));
+        assert_eq!(
+            listed[2].badge.as_deref(),
+            Some("may use usage credits")
+        );
         assert!(listed.iter().all(|m| m.id != "composer-2.5"));
 
         let nanos = std::time::SystemTime::now()

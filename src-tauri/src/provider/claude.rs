@@ -30,16 +30,16 @@
 
 use super::claude_config::{claude_env, resolve_claude_config_dir, ConfigDirInfo};
 use super::claude_detect::{
-    cached_claude_version, claude_login_status, native_executable, read_claude_version,
-    resolve_adapter, resolve_claude, unwrap_windows_shim, ResolvedCli,
+    cached_claude_version, claude_login_status, native_executable, read_claude_version, resolve_adapter, resolve_claude,
+    unwrap_windows_shim, ResolvedCli,
 };
 use super::{
     is_extension_method, plans_by_default, AgentRequestKind, ProgramArgs, Provider, ProviderId,
     ProviderStatus, SessionOpts, TerminalKind, TerminalLaunch,
 };
+use crate::pipelines::StageKind;
 use crate::acp::request_handler::is_permission_method;
 use crate::cli_detect::LoginStatus;
-use crate::pipelines::StageKind;
 use crate::store::settings_store::ClaudeProviderSettings;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -210,10 +210,7 @@ pub fn claude_terminal_args(req: &TerminalLaunch) -> Result<Vec<String>, String>
 /// The program and argv for one terminal launch of the resolved CLI: a
 /// `node` + script shim keeps the script first, so Claude's own flags
 /// (`--settings` among them) always follow it.
-fn claude_terminal_program(
-    launch: ResolvedCli,
-    req: &TerminalLaunch,
-) -> Result<ProgramArgs, String> {
+fn claude_terminal_program(launch: ResolvedCli, req: &TerminalLaunch) -> Result<ProgramArgs, String> {
     let mut args = launch.prefix_args;
     args.extend(claude_terminal_args(req)?);
     Ok(ProgramArgs::new(launch.program.display().to_string(), args))
@@ -449,10 +446,7 @@ mod tests {
         assert_eq!(args[0], script, "node must get the script first: {args:?}");
         let flag = args.iter().position(|a| a == "--settings").unwrap();
         assert_eq!(args[flag + 1], settings.to_string());
-        assert!(
-            flag < args.iter().position(|a| a == "Plan it").unwrap(),
-            "{args:?}"
-        );
+        assert!(flag < args.iter().position(|a| a == "Plan it").unwrap(), "{args:?}");
         assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1);
 
         // A native claude: the flag comes before the prompt, after the model.
@@ -465,21 +459,14 @@ mod tests {
         assert_eq!(args.last().map(String::as_str), Some("Plan it"));
         // Resume keeps it too; no settings means no flag.
         let resume = TerminalLaunch {
-            kind: TerminalKind::Resume {
-                session_id: "685dd464-eabf-4e4c-9f6f-ac02c63aad27".into(),
-            },
+            kind: TerminalKind::Resume { session_id: "685dd464-eabf-4e4c-9f6f-ac02c63aad27".into() },
             model: None,
             session_id: None,
             settings: Some(settings),
         };
         assert_eq!(claude_terminal_args(&resume).unwrap()[0], "--settings");
-        let plain = TerminalLaunch {
-            settings: None,
-            ..resume
-        };
-        assert!(!claude_terminal_args(&plain)
-            .unwrap()
-            .contains(&"--settings".to_string()));
+        let plain = TerminalLaunch { settings: None, ..resume };
+        assert!(!claude_terminal_args(&plain).unwrap().contains(&"--settings".to_string()));
     }
 
     #[test]
@@ -678,15 +665,7 @@ mod tests {
         };
         assert_eq!(
             claude_terminal_args(&with_prompt).unwrap(),
-            vec![
-                "--model",
-                "opus",
-                "--resume",
-                ID,
-                "--permission-mode",
-                "auto",
-                "Read findings-pr_reviewer-r1.json"
-            ]
+            vec!["--model", "opus", "--resume", ID, "--permission-mode", "auto", "Read findings-pr_reviewer-r1.json"]
         );
         let bad = TerminalLaunch {
             kind: TerminalKind::RoleResume {
@@ -831,13 +810,7 @@ mod tests {
         planner.session_id = Some(id.clone());
         assert_eq!(
             claude_terminal_args(&planner).unwrap(),
-            vec![
-                "--session-id",
-                id.as_str(),
-                "--permission-mode",
-                "plan",
-                "Plan it"
-            ]
+            vec!["--session-id", id.as_str(), "--permission-mode", "plan", "Plan it"]
         );
         planner.session_id = Some("--continue".into());
         assert!(claude_terminal_args(&planner).is_err());
@@ -854,13 +827,8 @@ mod tests {
             settings: None,
         };
         let args = claude_terminal_args(&launch).unwrap();
-        assert_eq!(
-            args,
-            vec!["--resume", "0b6c1d2e-aaaa-bbbb-cccc-1234567890ab"]
-        );
-        assert!(!args
-            .iter()
-            .any(|a| a == "--session-id" || a == "--fork-session"));
+        assert_eq!(args, vec!["--resume", "0b6c1d2e-aaaa-bbbb-cccc-1234567890ab"]);
+        assert!(!args.iter().any(|a| a == "--session-id" || a == "--fork-session"));
     }
 
     #[test]

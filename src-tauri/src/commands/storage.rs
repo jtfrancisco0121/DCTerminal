@@ -187,10 +187,7 @@ mod tests {
         scratch.save().unwrap();
         let corrupt = dir.join("forms.json.corrupt-1");
         std::fs::write(&corrupt, b"x").unwrap();
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&corrupt)
-            .unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&corrupt).unwrap();
         file.set_modified(SystemTime::now() - Duration::from_secs(40 * 86_400))
             .unwrap();
 

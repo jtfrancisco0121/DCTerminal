@@ -113,9 +113,7 @@ fn load_rechecks_files_changed_on_disk_and_missing_ones() {
     std::fs::write(&file, b"").unwrap();
     assert!(store.load("tab_1", std::slice::from_ref(&info.id)).is_err());
     std::fs::remove_file(&file).unwrap();
-    let err = store
-        .load("tab_1", std::slice::from_ref(&info.id))
-        .unwrap_err();
+    let err = store.load("tab_1", std::slice::from_ref(&info.id)).unwrap_err();
     assert!(err.contains("gone"), "{err}");
     // Removing an id that is already gone is not an error.
     store.remove("tab_1", &info.id).unwrap();

@@ -172,12 +172,7 @@ impl AttachmentStore {
         Ok(None)
     }
 
-    pub fn add(
-        &self,
-        tab_id: &str,
-        mime: &str,
-        data_base64: &str,
-    ) -> Result<AttachmentInfo, String> {
+    pub fn add(&self, tab_id: &str, mime: &str, data_base64: &str) -> Result<AttachmentInfo, String> {
         let mime = mime.trim().to_ascii_lowercase();
         let ext = extension_for(&mime).ok_or_else(|| {
             format!("Only PNG, JPEG, GIF and WebP images can be attached (got {mime}).")
@@ -258,10 +253,7 @@ mod tests {
         let ok = dir.join("Shot.PNG");
         std::fs::write(&ok, [1u8, 2, 3]).unwrap();
         let got = read_image_file(&ok).unwrap();
-        assert_eq!(
-            (got.name.as_str(), got.mime.as_str()),
-            ("Shot.PNG", "image/png")
-        );
+        assert_eq!((got.name.as_str(), got.mime.as_str()), ("Shot.PNG", "image/png"));
         assert_eq!(got.data, b64(&[1, 2, 3]));
 
         let txt = dir.join("notes.txt");
@@ -317,9 +309,7 @@ mod tests {
     fn add_load_and_remove_round_trip() {
         let data = temp_root("roundtrip");
         let store = AttachmentStore::open(&data, &[]);
-        let info = store
-            .add("tab_1", "image/PNG", &b64(b"\x89PNGdata"))
-            .unwrap();
+        let info = store.add("tab_1", "image/PNG", &b64(b"\x89PNGdata")).unwrap();
         assert_eq!(info.mime, "image/png");
         assert_eq!(info.bytes, 8);
         assert!(data
@@ -337,9 +327,7 @@ mod tests {
     fn add_refuses_bad_type_and_bad_data() {
         let data = temp_root("refuse");
         let store = AttachmentStore::open(&data, &[]);
-        assert!(store
-            .add("tab_1", "image/svg+xml", &b64(b"<svg/>"))
-            .is_err());
+        assert!(store.add("tab_1", "image/svg+xml", &b64(b"<svg/>")).is_err());
         assert!(store.add("tab_1", "image/png", "not base64!").is_err());
         let big = vec![0u8; MAX_IMAGE_BYTES + 1];
         assert!(store.add("tab_1", "image/png", &b64(&big)).is_err());

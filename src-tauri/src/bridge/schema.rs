@@ -59,25 +59,15 @@ fn list(items: &[&str]) -> String {
     items.join(", ")
 }
 
-fn unknown_fields(
-    object: &Map<String, Value>,
-    at: &str,
-    allowed: &[&str],
-    problems: &mut Vec<String>,
-) {
+fn unknown_fields(object: &Map<String, Value>, at: &str, allowed: &[&str], problems: &mut Vec<String>) {
     for key in object.keys().filter(|key| !allowed.contains(&key.as_str())) {
-        problems.push(format!(
-            "`{at}{key}` is not a field (allowed: {})",
-            list(allowed)
-        ));
+        problems.push(format!("`{at}{key}` is not a field (allowed: {})", list(allowed)));
     }
 }
 
 fn validate_reviewer(args: &Value) -> Result<Value, Vec<String>> {
     let Some(object) = args.as_object() else {
-        return Err(vec![
-            "the arguments must be a JSON object with `verdict` and `findings`".to_string(),
-        ]);
+        return Err(vec!["the arguments must be a JSON object with `verdict` and `findings`".to_string()]);
     };
     let mut problems = Vec::new();
     unknown_fields(object, "", &REVIEWER_FIELDS, &mut problems);
@@ -88,10 +78,7 @@ fn validate_reviewer(args: &Value) -> Result<Value, Vec<String>> {
     }
     let verdict = match object.get("verdict") {
         None => {
-            problems.push(format!(
-                "`verdict` is missing: use one of {}",
-                list(&VERDICTS)
-            ));
+            problems.push(format!("`verdict` is missing: use one of {}", list(&VERDICTS)));
             None
         }
         Some(Value::String(text)) if VERDICTS.contains(&text.as_str()) => Some(text.clone()),
@@ -109,14 +96,10 @@ fn validate_reviewer(args: &Value) -> Result<Value, Vec<String>> {
     };
     let mut findings = Vec::new();
     match object.get("findings") {
-        None => problems
-            .push("`findings` is missing: give a list, `[]` when there are none".to_string()),
+        None => problems.push("`findings` is missing: give a list, `[]` when there are none".to_string()),
         Some(Value::Array(items)) => {
             if items.len() > MAX_FINDINGS {
-                problems.push(format!(
-                    "`findings` has {} items; at most {MAX_FINDINGS}",
-                    items.len()
-                ));
+                problems.push(format!("`findings` has {} items; at most {MAX_FINDINGS}", items.len()));
             }
             for (index, item) in items.iter().enumerate() {
                 if let Some(finding) = check_finding(index, item, &mut problems) {
@@ -126,18 +109,9 @@ fn validate_reviewer(args: &Value) -> Result<Value, Vec<String>> {
         }
         Some(other) => problems.push(format!("`findings` must be a list, not {other}")),
     }
-    let listed = object
-        .get("findings")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    if verdict.as_deref() == Some("CHANGES_REQUIRED")
-        && object.get("findings").is_some_and(Value::is_array)
-        && listed == 0
-    {
-        problems.push(
-            "`verdict` is CHANGES_REQUIRED but `findings` is empty: list what must change"
-                .to_string(),
-        );
+    let listed = object.get("findings").and_then(Value::as_array).map_or(0, Vec::len);
+    if verdict.as_deref() == Some("CHANGES_REQUIRED") && object.get("findings").is_some_and(Value::is_array) && listed == 0 {
+        problems.push("`verdict` is CHANGES_REQUIRED but `findings` is empty: list what must change".to_string());
     }
     if !problems.is_empty() {
         return Err(problems);
@@ -148,19 +122,14 @@ fn validate_reviewer(args: &Value) -> Result<Value, Vec<String>> {
 fn check_finding(index: usize, item: &Value, problems: &mut Vec<String>) -> Option<Value> {
     let at = format!("findings[{index}]");
     let Some(object) = item.as_object() else {
-        problems.push(format!(
-            "`{at}` must be an object with `severity` and `summary`"
-        ));
+        problems.push(format!("`{at}` must be an object with `severity` and `summary`"));
         return None;
     };
     let before = problems.len();
     unknown_fields(object, &format!("{at}."), &FINDING_FIELDS, problems);
     let mut out = Map::new();
     match object.get("severity") {
-        None => problems.push(format!(
-            "`{at}.severity` is missing: use one of {}",
-            list(&SEVERITIES)
-        )),
+        None => problems.push(format!("`{at}.severity` is missing: use one of {}", list(&SEVERITIES))),
         Some(Value::String(text)) if SEVERITIES.contains(&text.as_str()) => {
             out.insert("severity".into(), json!(text));
         }
@@ -191,9 +160,7 @@ fn check_finding(index: usize, item: &Value, problems: &mut Vec<String>) -> Opti
         match object.get(key) {
             None | Some(Value::Null) => {}
             Some(Value::String(text)) if text.chars().count() > MAX_REF_CHARS => {
-                problems.push(format!(
-                    "`{at}.{key}` is longer than {MAX_REF_CHARS} characters"
-                ));
+                problems.push(format!("`{at}.{key}` is longer than {MAX_REF_CHARS} characters"));
             }
             Some(Value::String(text)) => {
                 if !text.trim().is_empty() {
@@ -208,21 +175,13 @@ fn check_finding(index: usize, item: &Value, problems: &mut Vec<String>) -> Opti
         Some(Value::Bool(flag)) => {
             out.insert("regression".into(), json!(flag));
         }
-        Some(other) => problems.push(format!(
-            "`{at}.regression` must be true or false, not {other}"
-        )),
+        Some(other) => problems.push(format!("`{at}.regression` must be true or false, not {other}")),
     }
     (problems.len() == before).then_some(Value::Object(out))
 }
 
 /// A required string field: trimmed, not empty, at most `max` characters.
-fn required_text(
-    object: &Map<String, Value>,
-    at: &str,
-    key: &str,
-    max: usize,
-    problems: &mut Vec<String>,
-) -> Option<String> {
+fn required_text(object: &Map<String, Value>, at: &str, key: &str, max: usize, problems: &mut Vec<String>) -> Option<String> {
     match object.get(key) {
         None | Some(Value::Null) => {
             problems.push(format!("`{at}{key}` is missing"));
@@ -258,9 +217,7 @@ fn no_whitespace(value: Option<String>, at: &str, problems: &mut Vec<String>) ->
 
 fn validate_implementer(args: &Value) -> Result<Value, Vec<String>> {
     let Some(object) = args.as_object() else {
-        return Err(vec![
-            "the arguments must be a JSON object with `prs` and `summary`".to_string(),
-        ]);
+        return Err(vec!["the arguments must be a JSON object with `prs` and `summary`".to_string()]);
     };
     let mut problems = Vec::new();
     unknown_fields(object, "", &IMPLEMENTER_FIELDS, &mut problems);
@@ -273,22 +230,16 @@ fn validate_implementer(args: &Value) -> Result<Value, Vec<String>> {
     let blocked = match object.get("blocked") {
         None | Some(Value::Null) => None,
         Some(Value::String(text)) if text.trim().is_empty() => {
-            problems.push(
-                "`blocked` is empty: say why you could not finish, or leave it out".to_string(),
-            );
+            problems.push("`blocked` is empty: say why you could not finish, or leave it out".to_string());
             None
         }
         Some(Value::String(text)) if text.trim().chars().count() > MAX_LONG_TEXT_CHARS => {
-            problems.push(format!(
-                "`blocked` is longer than {MAX_LONG_TEXT_CHARS} characters"
-            ));
+            problems.push(format!("`blocked` is longer than {MAX_LONG_TEXT_CHARS} characters"));
             None
         }
         Some(Value::String(text)) => Some(text.trim().to_string()),
         Some(other) => {
-            problems.push(format!(
-                "`blocked` must be a string saying why you are blocked, not {other}"
-            ));
+            problems.push(format!("`blocked` must be a string saying why you are blocked, not {other}"));
             None
         }
     };
@@ -361,28 +312,17 @@ fn validate_implementer(args: &Value) -> Result<Value, Vec<String>> {
         None | Some(Value::Null) => {}
         Some(Value::Array(items)) => {
             if items.len() > MAX_CHECKS {
-                problems.push(format!(
-                    "`checks` has {} items; at most {MAX_CHECKS}",
-                    items.len()
-                ));
+                problems.push(format!("`checks` has {} items; at most {MAX_CHECKS}", items.len()));
             }
             for (index, item) in items.iter().enumerate() {
                 let at = format!("checks[{index}]");
                 let Some(check) = item.as_object() else {
-                    problems.push(format!(
-                        "`{at}` must be an object with `command` and `passed`"
-                    ));
+                    problems.push(format!("`{at}` must be an object with `command` and `passed`"));
                     continue;
                 };
                 let before = problems.len();
                 unknown_fields(check, &format!("{at}."), &CHECK_FIELDS, &mut problems);
-                let command = required_text(
-                    check,
-                    &format!("{at}."),
-                    "command",
-                    MAX_REF_CHARS,
-                    &mut problems,
-                );
+                let command = required_text(check, &format!("{at}."), "command", MAX_REF_CHARS, &mut problems);
                 let passed = match check.get("passed") {
                     Some(Value::Bool(flag)) => Some(*flag),
                     None => {
@@ -485,9 +425,7 @@ pub fn planner_tasks_with(plan: &str, repos: &[String]) -> Result<Vec<PlannedTas
 
 fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<String>> {
     let Some(object) = value.as_object() else {
-        return Err(vec![
-            "the tasks block must be a JSON object with `tasks`".to_string()
-        ]);
+        return Err(vec!["the tasks block must be a JSON object with `tasks`".to_string()]);
     };
     let mut problems = Vec::new();
     unknown_fields(object, "", &TASKS_FIELDS, &mut problems);
@@ -504,10 +442,7 @@ fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<
         problems.push("`tasks` is empty: a one-PR plan has one task".to_string());
     }
     if items.len() > MAX_TASKS {
-        problems.push(format!(
-            "`tasks` has {} items; at most {MAX_TASKS}",
-            items.len()
-        ));
+        problems.push(format!("`tasks` has {} items; at most {MAX_TASKS}", items.len()));
     }
     let mut tasks = Vec::new();
     // Every task whose id reads, with its dependencies, for the checks
@@ -521,29 +456,14 @@ fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<
         };
         let before = problems.len();
         unknown_fields(task, &format!("{at}."), &TASK_FIELDS, &mut problems);
-        let id = required_text(task, &format!("{at}."), "id", 20, &mut problems)
-            .map(|id| id.to_lowercase());
+        let id = required_text(task, &format!("{at}."), "id", 20, &mut problems).map(|id| id.to_lowercase());
         if let Some(id) = id.as_deref() {
             if !valid_task_id(id) {
-                problems.push(format!(
-                    "`{at}.id` {id:?} must be pr1, pr2, … in plan order"
-                ));
+                problems.push(format!("`{at}.id` {id:?} must be pr1, pr2, … in plan order"));
             }
         }
-        let title = required_text(
-            task,
-            &format!("{at}."),
-            "title",
-            MAX_SUMMARY_CHARS,
-            &mut problems,
-        );
-        let summary = required_text(
-            task,
-            &format!("{at}."),
-            "summary",
-            MAX_LONG_TEXT_CHARS,
-            &mut problems,
-        );
+        let title = required_text(task, &format!("{at}."), "title", MAX_SUMMARY_CHARS, &mut problems);
+        let summary = required_text(task, &format!("{at}."), "summary", MAX_LONG_TEXT_CHARS, &mut problems);
         let depends_on: Vec<String> = match task.get("dependsOn") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::Array(deps)) => deps
@@ -551,17 +471,13 @@ fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<
                 .filter_map(|dep| match dep.as_str() {
                     Some(text) => Some(text.trim().to_lowercase()),
                     None => {
-                        problems.push(format!(
-                            "`{at}.dependsOn` must list task ids such as \"pr1\", not {dep}"
-                        ));
+                        problems.push(format!("`{at}.dependsOn` must list task ids such as \"pr1\", not {dep}"));
                         None
                     }
                 })
                 .collect(),
             Some(other) => {
-                problems.push(format!(
-                    "`{at}.dependsOn` must be a list of task ids, not {other}"
-                ));
+                problems.push(format!("`{at}.dependsOn` must be a list of task ids, not {other}"));
                 Vec::new()
             }
         };
@@ -603,10 +519,7 @@ fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<
     }
     if problems.is_empty() {
         if let Some(cycle) = dependency_cycle(&tasks) {
-            problems.push(format!(
-                "the dependencies go round in a circle ({})",
-                cycle.join(" → ")
-            ));
+            problems.push(format!("the dependencies go round in a circle ({})", cycle.join(" → ")));
         }
     }
     if !problems.is_empty() {
@@ -619,20 +532,13 @@ fn check_tasks(value: &Value, repos: &[String]) -> Result<Vec<PlannedTask>, Vec<
 /// else a name from Settings › Repos, in any case, returned as Settings
 /// spells it. A name that is not there lists the ones that are, so Claude
 /// fixes the plan in the same turn.
-fn task_repo(
-    value: Option<&Value>,
-    at: &str,
-    repos: &[String],
-    problems: &mut Vec<String>,
-) -> Option<String> {
+fn task_repo(value: Option<&Value>, at: &str, repos: &[String], problems: &mut Vec<String>) -> Option<String> {
     let name = match value {
         None | Some(Value::Null) => return None,
         Some(Value::String(text)) if text.trim().is_empty() => return None,
         Some(Value::String(text)) => text.trim(),
         Some(other) => {
-            problems.push(format!(
-                "`{at}.repo` must be a repo name such as \"backend\", not {other}"
-            ));
+            problems.push(format!("`{at}.repo` must be a repo name such as \"backend\", not {other}"));
             return None;
         }
     };
@@ -651,22 +557,13 @@ fn task_repo(
 }
 
 fn valid_task_id(id: &str) -> bool {
-    id.strip_prefix("pr").is_some_and(|n| {
-        !n.is_empty()
-            && n.len() <= 2
-            && !n.starts_with('0')
-            && n.chars().all(|ch| ch.is_ascii_digit())
-    })
+    id.strip_prefix("pr")
+        .is_some_and(|n| !n.is_empty() && n.len() <= 2 && !n.starts_with('0') && n.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 /// The first circle of dependencies, as ids (`pr1 → pr2 → pr1`), if any.
 fn dependency_cycle(tasks: &[PlannedTask]) -> Option<Vec<String>> {
-    fn visit<'a>(
-        id: &'a str,
-        tasks: &'a [PlannedTask],
-        path: &mut Vec<&'a str>,
-        done: &mut Vec<&'a str>,
-    ) -> Option<Vec<String>> {
+    fn visit<'a>(id: &'a str, tasks: &'a [PlannedTask], path: &mut Vec<&'a str>, done: &mut Vec<&'a str>) -> Option<Vec<String>> {
         if let Some(at) = path.iter().position(|seen| *seen == id) {
             let mut cycle: Vec<String> = path[at..].iter().map(|s| s.to_string()).collect();
             cycle.push(id.to_string());
@@ -676,11 +573,7 @@ fn dependency_cycle(tasks: &[PlannedTask]) -> Option<Vec<String>> {
             return None;
         }
         path.push(id);
-        let deps = tasks
-            .iter()
-            .find(|t| t.id == id)
-            .map(|t| t.depends_on.as_slice())
-            .unwrap_or_default();
+        let deps = tasks.iter().find(|t| t.id == id).map(|t| t.depends_on.as_slice()).unwrap_or_default();
         for dep in deps {
             if let Some(cycle) = visit(dep, tasks, path, done) {
                 return Some(cycle);
@@ -691,9 +584,7 @@ fn dependency_cycle(tasks: &[PlannedTask]) -> Option<Vec<String>> {
         None
     }
     let mut done = Vec::new();
-    tasks
-        .iter()
-        .find_map(|task| visit(&task.id, tasks, &mut Vec::new(), &mut done))
+    tasks.iter().find_map(|task| visit(&task.id, tasks, &mut Vec::new(), &mut done))
 }
 
 /// The Planner's result, as `results/<turn>.json` and the turn event carry it.
@@ -858,10 +749,7 @@ pub fn stage_instructions(kind: ResultKind, repos: &[crate::store::RepoEntry]) -
     if kind != ResultKind::Planner || repos.is_empty() {
         return base;
     }
-    let lines: Vec<String> = repos
-        .iter()
-        .map(|repo| format!("- `{}`: {}", repo.name, repo.folder))
-        .collect();
+    let lines: Vec<String> = repos.iter().map(|repo| format!("- `{}`: {}", repo.name, repo.folder)).collect();
     format!(
         "{base}\n\n\
          ### Repos\n\n\
@@ -903,22 +791,12 @@ pub fn accepted_message(kind: ResultKind, result: &Value) -> String {
     match kind {
         ResultKind::Reviewer => {
             let verdict = result.get("verdict").and_then(Value::as_str).unwrap_or("?");
-            let count = result
-                .get("findings")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
+            let count = result.get("findings").and_then(Value::as_array).map_or(0, Vec::len);
             format!("DCTerminal received your result: {verdict} with {count} finding(s). Finish your turn now.")
         }
         ResultKind::Implementer => {
-            let count = result
-                .get("prs")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            let blocked = if result.get("blocked").is_some() {
-                ", blocked"
-            } else {
-                ""
-            };
+            let count = result.get("prs").and_then(Value::as_array).map_or(0, Vec::len);
+            let blocked = if result.get("blocked").is_some() { ", blocked" } else { "" };
             format!("DCTerminal received your result: {count} pull request(s){blocked}. Finish your turn now.")
         }
         ResultKind::Planner => PLAN_RECEIVED.to_string(),

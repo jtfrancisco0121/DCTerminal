@@ -1,8 +1,8 @@
 //! `write_json_atomic`, `read_json` and `read_json_or_recover`.
 
 use crate::store::{
-    note_recovery, read_json, read_json_or_recover, read_json_or_recover_with, take_recovery_notes,
-    write_json_atomic,
+    note_recovery, read_json, read_json_or_recover, read_json_or_recover_with,
+    take_recovery_notes, write_json_atomic,
 };
 use crate::test_support::{names_in, TempDir};
 use serde::{Deserialize, Serialize};
@@ -177,10 +177,7 @@ struct Versioned {
 
 impl Default for Versioned {
     fn default() -> Self {
-        Self {
-            schema_version: 2,
-            n: 0,
-        }
+        Self { schema_version: 2, n: 0 }
     }
 }
 
@@ -192,28 +189,17 @@ fn a_newer_file_that_does_not_parse_is_set_aside_not_called_corrupt() {
     let path = dir.join("doc.json");
     let newer = r#"{"schemaVersion": 3, "n": "now a string"}"#;
     std::fs::write(&path, newer).unwrap();
-    assert_eq!(
-        read_json_or_recover::<Versioned>(&path).unwrap(),
-        Versioned::default()
-    );
+    assert_eq!(read_json_or_recover::<Versioned>(&path).unwrap(), Versioned::default());
     let names = names_in(dir.path());
     assert!(!names.iter().any(|n| n.contains(".corrupt-")), "{names:?}");
-    let kept: Vec<_> = names
-        .iter()
-        .filter(|n| n.starts_with("doc.json.from-v3-"))
-        .collect();
+    let kept: Vec<_> = names.iter().filter(|n| n.starts_with("doc.json.from-v3-")).collect();
     assert_eq!(kept.len(), 1, "{names:?}");
     assert_eq!(std::fs::read_to_string(dir.join(kept[0])).unwrap(), newer);
 
     // The same version in a wrong shape is still damaged.
     std::fs::write(&path, r#"{"schemaVersion": 2, "n": "x"}"#).unwrap();
-    assert_eq!(
-        read_json_or_recover::<Versioned>(&path).unwrap(),
-        Versioned::default()
-    );
-    assert!(names_in(dir.path())
-        .iter()
-        .any(|n| n.starts_with("doc.json.corrupt-")));
+    assert_eq!(read_json_or_recover::<Versioned>(&path).unwrap(), Versioned::default());
+    assert!(names_in(dir.path()).iter().any(|n| n.starts_with("doc.json.corrupt-")));
 }
 
 // The only test that drains the notes, so parallel tests cannot steal them.
@@ -225,16 +211,8 @@ fn notes_are_drained_once() {
     let _: Doc = read_json_or_recover(&path).unwrap();
     note_recovery("io_notes test note".to_string());
     let notes = take_recovery_notes();
-    assert!(
-        notes.iter().any(|note| note == "io_notes test note"),
-        "{notes:?}"
-    );
-    assert!(
-        notes.iter().any(|note| note.contains("noted.json")),
-        "{notes:?}"
-    );
+    assert!(notes.iter().any(|note| note == "io_notes test note"), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("noted.json")), "{notes:?}");
     let again = take_recovery_notes();
-    assert!(!again
-        .iter()
-        .any(|note| note.contains("io_notes") || note.contains("noted.json")));
+    assert!(!again.iter().any(|note| note.contains("io_notes") || note.contains("noted.json")));
 }

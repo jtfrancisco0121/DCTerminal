@@ -278,10 +278,7 @@ mod tests {
         assert!(!out.contains("xyz"), "{out}");
         assert!(out.contains("https://api.example.com"));
         let env = redact_summary("GITHUB_TOKEN=ghp_123 API_KEY=k1 npm   publish", 500);
-        assert_eq!(
-            env,
-            "GITHUB_TOKEN=[redacted] API_KEY=[redacted] npm publish"
-        );
+        assert_eq!(env, "GITHUB_TOKEN=[redacted] API_KEY=[redacted] npm publish");
         assert_eq!(redact_summary("echo sk-live-123", 500), "echo [redacted]");
         assert_eq!(
             redact_summary("https://x.dev/a?q=1&access_token=abc", 500),

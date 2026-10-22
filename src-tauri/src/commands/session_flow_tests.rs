@@ -1066,10 +1066,7 @@ fn unknown_extension_methods_and_updates_do_not_stall_a_turn() {
     );
     // `_`-prefixed extensions are answered by the connection itself; other
     // unknown methods go through the router, which answers at once.
-    let routed: Vec<_> = asks
-        .iter()
-        .map(|(r, a)| (r["method"].clone(), a.clone()))
-        .collect();
+    let routed: Vec<_> = asks.iter().map(|(r, a)| (r["method"].clone(), a.clone())).collect();
     assert_eq!(routed, vec![(json!("weird/thing"), Some(json!({})))]);
     assert_eq!(
         reply(&result.agent_text, 130),

@@ -22,8 +22,8 @@
 //! can follow end to end. An engine-1 run is manual only (V6).
 
 use super::folder::{
-    self, read_mode, read_result, read_stage, stage_dirs, write_mode, BridgeTurn, ResultKind,
-    StageInfo, StageMode, TurnOutcome, SCHEMA,
+    self, read_mode, read_result, read_stage, stage_dirs, write_mode, BridgeTurn, ResultKind, StageInfo,
+    StageMode, TurnOutcome, SCHEMA,
 };
 use super::schema::{FULL_TOOL_NAME, SERVER_NAME};
 use crate::pipelines::autopilot::stage_key;
@@ -70,12 +70,7 @@ pub struct BridgeTag {
 }
 
 /// Whether `role_id` starting at `chain`'s step of `run` launches bridged.
-pub fn plan_for(
-    run: &PipelineRun,
-    def: &PipelineDef,
-    chain: &ChainRef,
-    role_id: &str,
-) -> Option<BridgePlan> {
+pub fn plan_for(run: &PipelineRun, def: &PipelineDef, chain: &ChainRef, role_id: &str) -> Option<BridgePlan> {
     if run.engine < ENGINE_V2 {
         return None;
     }
@@ -143,10 +138,7 @@ fn stage_kind(stage: &crate::pipelines::StageDef) -> Option<ResultKind> {
     match stage.kind() {
         StageKind::Planner => Some(ResultKind::Planner),
         StageKind::Implementer => Some(ResultKind::Implementer),
-        StageKind::Reviewer => stage
-            .also_reviewers
-            .is_empty()
-            .then_some(ResultKind::Reviewer),
+        StageKind::Reviewer => stage.also_reviewers.is_empty().then_some(ResultKind::Reviewer),
         StageKind::Generic => None,
     }
 }
@@ -170,8 +162,7 @@ pub fn prepare_stage(runs_root: &Path, plan: &BridgePlan, tab_id: &str) -> Resul
     if !folder::valid_tab_id(tab_id) {
         return Err(format!("not a tab id: {tab_id:?}"));
     }
-    let run_dir = folder::run_dir(runs_root, &plan.run_id)
-        .ok_or_else(|| format!("not a run id: {}", plan.run_id))?;
+    let run_dir = folder::run_dir(runs_root, &plan.run_id).ok_or_else(|| format!("not a run id: {}", plan.run_id))?;
     let info = StageInfo {
         schema: SCHEMA,
         run_id: plan.run_id.clone(),
@@ -182,12 +173,8 @@ pub fn prepare_stage(runs_root: &Path, plan: &BridgePlan, tab_id: &str) -> Resul
         tab_id: tab_id.to_string(),
         result: plan.kind,
     };
-    folder::write_stage(&run_dir, &info, mode_for(plan.autopilot)).map_err(|err| {
-        format!(
-            "could not prepare the run folder {}: {err}",
-            run_dir.display()
-        )
-    })?;
+    folder::write_stage(&run_dir, &info, mode_for(plan.autopilot))
+        .map_err(|err| format!("could not prepare the run folder {}: {err}", run_dir.display()))?;
     Ok(run_dir)
 }
 
@@ -203,21 +190,10 @@ pub fn write_run_repos(run_dir: &Path, repos: &[crate::store::RepoEntry]) -> Res
             folder: repo.folder.clone(),
         })
         .collect();
-    folder::write_repos(run_dir, &repos).map_err(|err| {
-        format!(
-            "could not write {}: {err}",
-            run_dir.join(folder::REPOS_FILE).display()
-        )
-    })
+    folder::write_repos(run_dir, &repos).map_err(|err| format!("could not write {}: {err}", run_dir.join(folder::REPOS_FILE).display()))
 }
 
-fn bridge_args(
-    mode: &str,
-    run_dir: &Path,
-    run_id: &str,
-    stage_key: &str,
-    tab_id: &str,
-) -> Vec<String> {
+fn bridge_args(mode: &str, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> Vec<String> {
     [
         "bridge",
         mode,
@@ -235,14 +211,7 @@ fn bridge_args(
     .collect()
 }
 
-fn hook(
-    program: &Path,
-    run_dir: &Path,
-    run_id: &str,
-    stage_key: &str,
-    tab_id: &str,
-    event: &str,
-) -> Value {
+fn hook(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str, event: &str) -> Value {
     let mut args = bridge_args("hook", run_dir, run_id, stage_key, tab_id);
     args.extend(["--event".to_string(), event.to_string()]);
     json!({ "type": "command", "command": program.display().to_string(), "args": args })
@@ -277,13 +246,7 @@ pub fn hook_settings(
 }
 
 /// The inline `--mcp-config` with the one stdio server.
-pub fn mcp_config(
-    program: &Path,
-    run_dir: &Path,
-    run_id: &str,
-    stage_key: &str,
-    tab_id: &str,
-) -> Value {
+pub fn mcp_config(program: &Path, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> Value {
     json!({
         "mcpServers": {
             SERVER_NAME: {
@@ -319,10 +282,10 @@ pub fn launch_flags(
             Vec::new()
         } else {
             vec![
-                "--allowedTools".to_string(),
-                FULL_TOOL_NAME.to_string(),
-                "--mcp-config".to_string(),
-                mcp_config(program, run_dir, run_id, stage_key, tab_id).to_string(),
+            "--allowedTools".to_string(),
+            FULL_TOOL_NAME.to_string(),
+            "--mcp-config".to_string(),
+            mcp_config(program, run_dir, run_id, stage_key, tab_id).to_string(),
             ]
         },
         hooks: hook_settings(kind, program, run_dir, run_id, stage_key, tab_id),
@@ -331,25 +294,12 @@ pub fn launch_flags(
 
 /// A bridged tab relaunching (Restart, resume): the same flags, while the
 /// tab still owns its stage. `None` when it does not, or the folder is gone.
-pub fn relaunch_flags(
-    runs_root: &Path,
-    tag: &BridgeTag,
-    tab_id: &str,
-    program: &Path,
-) -> Option<BridgeFlags> {
+pub fn relaunch_flags(runs_root: &Path, tag: &BridgeTag, tab_id: &str, program: &Path) -> Option<BridgeFlags> {
     let run_dir = folder::run_dir(runs_root, &tag.run_id)?;
     let dir = folder::stage_dir_path(&run_dir, &tag.stage)?;
     let (info, _) = read_stage(&dir)?;
-    (info.run_id == tag.run_id && info.tab_id == tab_id).then(|| {
-        launch_flags(
-            info.result,
-            program,
-            &run_dir,
-            &tag.run_id,
-            &tag.stage,
-            tab_id,
-        )
-    })
+    (info.run_id == tag.run_id && info.tab_id == tab_id)
+        .then(|| launch_flags(info.result, program, &run_dir, &tag.run_id, &tag.stage, tab_id))
 }
 
 /// A stage about to be resumed (V4): its last turn was handed on, so it
@@ -357,11 +307,7 @@ pub fn relaunch_flags(
 /// news) until the resumed session's first prompt writes a new turn. Does
 /// nothing when `tab_id` no longer owns the stage. Returns what was cleared,
 /// for [`restore_stage_turn`] when the resume then fails.
-pub fn clear_stage_turn(
-    runs_root: &Path,
-    tag: &BridgeTag,
-    tab_id: &str,
-) -> Result<Option<Vec<u8>>, String> {
+pub fn clear_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Result<Option<Vec<u8>>, String> {
     let Some(dir) = owned_stage_dir(runs_root, tag, tab_id) else {
         return Ok(None);
     };
@@ -372,12 +318,7 @@ pub fn clear_stage_turn(
 
 /// A resume failed: put back the turn [`clear_stage_turn`] cleared, unless
 /// the stage wrote a newer one meanwhile or `tab_id` no longer owns it.
-pub fn restore_stage_turn(
-    runs_root: &Path,
-    tag: &BridgeTag,
-    tab_id: &str,
-    saved: &[u8],
-) -> Result<(), String> {
+pub fn restore_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str, saved: &[u8]) -> Result<(), String> {
     let Some(dir) = owned_stage_dir(runs_root, tag, tab_id) else {
         return Ok(());
     };
@@ -390,8 +331,7 @@ pub fn restore_stage_turn(
 
 /// `tag`'s stage folder, while `tab_id` holds that stage.
 fn owned_stage_dir(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Option<PathBuf> {
-    let dir = folder::run_dir(runs_root, &tag.run_id)
-        .and_then(|run| folder::stage_dir_path(&run, &tag.stage))?;
+    let dir = folder::run_dir(runs_root, &tag.run_id).and_then(|run| folder::stage_dir_path(&run, &tag.stage))?;
     match read_stage(&dir) {
         Some((info, _)) if info.run_id == tag.run_id && info.tab_id == tab_id => Some(dir),
         _ => None,
@@ -490,12 +430,7 @@ pub fn stage_dir_of(runs_root: &Path, tag: &BridgeTag) -> Option<PathBuf> {
 /// You took a stage over, or handed it back (V5, D28): its `mode` file,
 /// which the bridge reads at each stop and the terminal at each keystroke.
 /// False (nothing written) when `tab_id` no longer owns the stage.
-pub fn set_stage_mode(
-    runs_root: &Path,
-    tag: &BridgeTag,
-    tab_id: &str,
-    mode: StageMode,
-) -> Result<bool, String> {
+pub fn set_stage_mode(runs_root: &Path, tag: &BridgeTag, tab_id: &str, mode: StageMode) -> Result<bool, String> {
     let Some(dir) = stage_dir_of(runs_root, tag) else {
         return Ok(false);
     };
@@ -520,10 +455,7 @@ pub fn read_stage_turn(runs_root: &Path, tag: &BridgeTag, tab_id: &str) -> Optio
     }
     let turn = turn?;
     // An abandoned turn (D9a) is never read back: autopilot never acts on it.
-    let end = turn
-        .ended
-        .clone()
-        .filter(|end| end.outcome != TurnOutcome::Abandoned)?;
+    let end = turn.ended.clone().filter(|end| end.outcome != TurnOutcome::Abandoned)?;
     let result = read_result(&dir, &turn.turn).map(|stored| stored.result);
     Some(BridgeTurn::new(&info, &turn, &end, result))
 }

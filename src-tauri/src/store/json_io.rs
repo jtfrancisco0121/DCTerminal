@@ -80,10 +80,7 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned + Serialize>(
             let fallback_value = fallback();
             if let (Some(found), Some(current)) = (
                 schema_version_of(path),
-                serde_json::to_value(&fallback_value)
-                    .ok()
-                    .as_ref()
-                    .and_then(schema_version_in),
+                serde_json::to_value(&fallback_value).ok().as_ref().and_then(schema_version_in),
             ) {
                 if found > current && set_aside_other_version(path, found).is_some() {
                     return Ok(fallback_value);
@@ -95,11 +92,7 @@ pub fn read_json_or_recover_with<T: serde::de::DeserializeOwned + Serialize>(
                 touch(&corrupt);
             }
             let bak = path.with_extension("json.bak");
-            let restored = if bak.exists() {
-                read_json::<T>(&bak).ok()
-            } else {
-                None
-            };
+            let restored = if bak.exists() { read_json::<T>(&bak).ok() } else { None };
             if moved && restored.is_some() {
                 restore(&bak, path);
             }
@@ -183,9 +176,7 @@ fn schema_version_of(path: &Path) -> Option<u32> {
 
 /// `schemaVersion` (or `schema_version`, as roles.json spells it) in `value`.
 fn schema_version_in(value: &serde_json::Value) -> Option<u32> {
-    let version = value
-        .get("schemaVersion")
-        .or_else(|| value.get("schema_version"))?;
+    let version = value.get("schemaVersion").or_else(|| value.get("schema_version"))?;
     u32::try_from(version.as_u64()?).ok()
 }
 
@@ -240,17 +231,10 @@ fn file_name(path: &Path) -> String {
 /// `.json.tmp` (a finished write that was not renamed in), then `.json.bak`.
 /// Returns the value and the file it came from.
 fn intact_copy<T: serde::de::DeserializeOwned>(path: &Path) -> Option<(T, PathBuf)> {
-    [
-        path.with_extension("json.tmp"),
-        path.with_extension("json.bak"),
-    ]
-    .into_iter()
-    .filter(|candidate| candidate.exists())
-    .find_map(|candidate| {
-        read_json::<T>(&candidate)
-            .ok()
-            .map(|value| (value, candidate))
-    })
+    [path.with_extension("json.tmp"), path.with_extension("json.bak")]
+        .into_iter()
+        .filter(|candidate| candidate.exists())
+        .find_map(|candidate| read_json::<T>(&candidate).ok().map(|value| (value, candidate)))
 }
 
 #[cfg(test)]

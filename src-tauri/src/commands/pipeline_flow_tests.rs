@@ -475,11 +475,7 @@ fn an_agent_counts_as_live_work_only_while_its_turn_runs() {
         "role_implementer",
         connect(&idle, ProviderId::Claude, "bypassPermissions"),
     ));
-    assert_eq!(
-        registry.live_count(),
-        0,
-        "an idle agent has no turn to stop"
-    );
+    assert_eq!(registry.live_count(), 0, "an idle agent has no turn to stop");
 
     registry.get_mut("tab-idle").unwrap().prompt_in_flight = true;
     assert_eq!(registry.live_count(), 1, "a running turn stops on quit");
@@ -521,18 +517,11 @@ fn agent_logs_read_while_a_turn_holds_the_client_lock() {
     assert_eq!(result.unwrap().agent_text, "hi");
 
     let registry = Arc::new(Mutex::new(SessionRegistry::new()));
-    registry.lock().unwrap().insert(LiveSession::from_client(
-        "tab-logs",
-        "role_implementer",
-        client,
-    ));
-    let client = registry
+    registry
         .lock()
         .unwrap()
-        .get("tab-logs")
-        .unwrap()
-        .client
-        .clone();
+        .insert(LiveSession::from_client("tab-logs", "role_implementer", client));
+    let client = registry.lock().unwrap().get("tab-logs").unwrap().client.clone();
     let turn = client.lock().unwrap();
 
     let (tx, rx) = mpsc::channel();
@@ -541,9 +530,7 @@ fn agent_logs_read_while_a_turn_holds_the_client_lock() {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let logs = agent_logs(&reader.lock().unwrap(), "tab-logs").map(|l| l.stderr);
-            let done = logs
-                .as_ref()
-                .map_or(true, |text| text.contains("adapter warming up"));
+            let done = logs.as_ref().map_or(true, |text| text.contains("adapter warming up"));
             if done || Instant::now() >= deadline {
                 let _ = tx.send(logs);
                 return;
@@ -605,11 +592,7 @@ fn app_exit_kills_the_agents_left_without_the_registry_lock() {
         lock_free.push(registry.try_lock().is_ok());
         session.kill();
     });
-    assert_eq!(
-        lock_free,
-        vec![true],
-        "each kill runs with the lock released"
-    );
+    assert_eq!(lock_free, vec![true], "each kill runs with the lock released");
     assert!(registry.lock().unwrap().get("tab-exit-kill").is_none());
 }
 
@@ -635,10 +618,7 @@ fn a_start_that_fails_after_it_began_leaves_the_tab_startable() {
     let starting = StartingTab::begin(&registry, "tab-ok").unwrap();
     starting.finish(&mut registry.lock().unwrap());
     let newer = StartingTab::begin(&registry, "tab-ok").unwrap();
-    assert!(
-        StartingTab::begin(&registry, "tab-ok").is_err(),
-        "one start at a time"
-    );
+    assert!(StartingTab::begin(&registry, "tab-ok").is_err(), "one start at a time");
     drop(newer);
     assert!(StartingTab::begin(&registry, "tab-ok").is_ok());
 }
@@ -801,16 +781,10 @@ fn exit_plan_on_a_planner_stage_goes_to_the_plan_card_whatever_the_role_id() {
         claude_permission_route("role_custom_planner", Some(StageKind::Planner), &usual),
         ClaudeRoute::PlanCard
     );
-    assert_eq!(
-        claude_permission_route("role_planner", None, &usual),
-        ClaudeRoute::PlanCard
-    );
+    assert_eq!(claude_permission_route("role_planner", None, &usual), ClaudeRoute::PlanCard);
     assert!(matches!(
         claude_permission_route("role_planner", Some(StageKind::Generic), &usual),
-        ClaudeRoute::AutoAllow {
-            exit_plan: true,
-            ..
-        }
+        ClaudeRoute::AutoAllow { exit_plan: true, .. }
     ));
 }
 
@@ -833,9 +807,7 @@ fn exit_plan_on_a_tab_tagged_as_a_planner_stage_goes_to_the_plan_card() {
     let mut store = StateStore::open_path(dir.join("state.json")).unwrap();
     let copy = role("role_custom_planner", "Planner copy");
     let tagged = store.create_draft_tab(&copy, "/tmp/p", true, None).unwrap();
-    let chain =
-        serde_json::from_value(json!({ "chainId": "ee_6", "kind": id, "step": 1, "total": 1 }))
-            .unwrap();
+    let chain = serde_json::from_value(json!({ "chainId": "ee_6", "kind": id, "step": 1, "total": 1 })).unwrap();
     store.set_tab_chain(&tagged, Some(chain), None).unwrap();
     let plain = store.create_draft_tab(&copy, "/tmp/p", true, None).unwrap();
     let store = Mutex::new(store);
@@ -844,14 +816,5 @@ fn exit_plan_on_a_tab_tagged_as_a_planner_stage_goes_to_the_plan_card() {
     let off_stage = claude_tab_route(Some(&store), &plain, "role_custom_planner", &usual);
     unregister_for_test(id);
     assert_eq!(on_stage, (ClaudeRoute::PlanCard, Some(StageKind::Planner)));
-    assert!(matches!(
-        off_stage,
-        (
-            ClaudeRoute::AutoAllow {
-                exit_plan: true,
-                ..
-            },
-            None
-        )
-    ));
+    assert!(matches!(off_stage, (ClaudeRoute::AutoAllow { exit_plan: true, .. }, None)));
 }

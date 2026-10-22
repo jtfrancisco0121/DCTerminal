@@ -459,27 +459,15 @@ mod session_log {
         let mut fake = home.run(&scenario, &["--session-id", SID, "go"]);
         let log = fake.wait_log(SID, |log| log.turn_done);
         assert!(log.turn_done && !log.interrupted, "{log:?}");
-        assert_eq!(
-            log.rate_limit.as_deref(),
-            Some(limit),
-            "screen:\n{}",
-            fake.screen()
-        );
-        assert!(
-            fake.screen().contains("hit your limit"),
-            "screen:\n{}",
-            fake.screen()
-        );
+        assert_eq!(log.rate_limit.as_deref(), Some(limit), "screen:\n{}", fake.screen());
+        assert!(fake.screen().contains("hit your limit"), "screen:\n{}", fake.screen());
 
         // The next turn is a fresh one: no limit any more.
         fake.write(b"again\r");
         let log = fake.wait_log(SID, |log| log.last_reply == "Back again." && log.turn_done);
         assert_eq!(log.rate_limit, None, "{log:?}");
         let records = log_records(&fake.log_path(SID).unwrap(), false);
-        assert!(
-            !records.iter().any(|r| r.to_string().contains("never")),
-            "the refused turn ended"
-        );
+        assert!(!records.iter().any(|r| r.to_string().contains("never")), "the refused turn ended");
     }
 
     #[test]
@@ -730,7 +718,10 @@ mod pty {
             .iter()
             .rposition(|line| *line == "Do you want to proceed?")
             .unwrap_or_else(|| panic!("no question:\n{screen}"));
-        assert!(lines[..question].contains(&"npm test"), "{screen}");
+        assert!(
+            lines[..question].contains(&"npm test"),
+            "{screen}"
+        );
         assert_eq!(lines[question + 1], "❯ 1. Yes", "{screen}");
         assert!(lines[question + 2].starts_with("2. Yes, and"), "{screen}");
         assert_eq!(lines[question + 3], "3. No", "{screen}");
@@ -831,10 +822,7 @@ mod pty {
             .collect();
         assert_eq!(
             prompts,
-            vec![
-                json!("Review findings:\n\n1. [HIGH] It retries forever."),
-                json!("line one\nline two")
-            ]
+            vec![json!("Review findings:\n\n1. [HIGH] It retries forever."), json!("line one\nline two")]
         );
     }
 
@@ -866,14 +854,7 @@ mod pty {
             .filter(|r| r["type"] == "user" && r["message"]["content"].is_string())
             .map(|r| r["message"]["content"].clone())
             .collect();
-        assert_eq!(
-            prompts,
-            vec![
-                json!("first prompt"),
-                json!("first prompt again"),
-                json!("the fix")
-            ]
-        );
+        assert_eq!(prompts, vec![json!("first prompt"), json!("first prompt again"), json!("the fix")]);
     }
 
     /// The S1 graceful stop: SIGTERM, then up to `STOP_GRACE` before SIGKILL.
@@ -970,9 +951,7 @@ mod recovery {
     /// After the restart: the log as a fresh reader sees it.
     fn reread(fake: &mut FakeClaude) -> HashMap<String, TerminalSessionLog> {
         let path = fake.log_path(SID).expect("log");
-        let log = SessionLogReader::open(&path, SID)
-            .expect("reader")
-            .summary();
+        let log = SessionLogReader::open(&path, SID).expect("reader").summary();
         HashMap::from([(TAB.to_string(), log)])
     }
 
@@ -990,17 +969,9 @@ mod recovery {
 
         let def = find_pipeline("full").unwrap();
         let mut run = running_run();
-        assert_eq!(
-            reconcile_run(&def, &mut run, &logs),
-            Some(Reconciled::CutOff)
-        );
+        assert_eq!(reconcile_run(&def, &mut run, &logs), Some(Reconciled::CutOff));
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
-        assert!(run
-            .events
-            .last()
-            .unwrap()
-            .summary
-            .contains("cut off when the app closed"));
+        assert!(run.events.last().unwrap().summary.contains("cut off when the app closed"));
         // Nothing was decided or handed on.
         assert!(run.claims.is_empty());
         assert!(run.autopilot.as_ref().unwrap().decided.is_empty());
@@ -1009,8 +980,7 @@ mod recovery {
     #[test]
     fn quit_after_the_turn_waits_with_app_restarted_unless_it_was_decided() {
         let home = FakeHome::new("h3_after_turn");
-        let scenario =
-            json!({ "turns": [ { "steps": [ { "reply": "Implemented. Draft PR opened." } ] } ]});
+        let scenario = json!({ "turns": [ { "steps": [ { "reply": "Implemented. Draft PR opened." } ] } ]});
         let mut fake = home.run(&scenario, &["--session-id", SID, "Implement the plan"]);
         fake.wait_log(SID, |log| log.turn_done);
         quit(&mut fake);
@@ -1024,45 +994,29 @@ mod recovery {
         };
         assert_eq!(tab_id, TAB);
         assert!(why.contains("Press Continue"), "{why}");
-        assert_eq!(
-            (run.status, run.stop_reason),
-            (RunStatus::Waiting, Some(StopReason::AppRestarted))
-        );
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::AppRestarted)));
         assert!(run.claims.is_empty(), "never acts by itself");
         assert!(run.autopilot.as_ref().unwrap().decided.is_empty());
 
         // Decided before the quit: nothing to recover.
         let mut decided = running_run();
-        decided
-            .autopilot
-            .as_mut()
-            .unwrap()
-            .decided
-            .push(turn_key(TAB, &logs[TAB]));
+        decided.autopilot.as_mut().unwrap().decided.push(turn_key(TAB, &logs[TAB]));
         assert_eq!(reconcile_run(&def, &mut decided, &logs), None);
         assert_eq!(decided.status, RunStatus::Running);
     }
 
     /// Watch `fake` the way the watchdog does, every 50 ms, until it reports
     /// a stall or `within` passes.
-    fn watch_for_stall(
-        fake: &mut FakeClaude,
-        limit: Duration,
-        within: Duration,
-    ) -> Option<(Duration, StallObservation)> {
+    fn watch_for_stall(fake: &mut FakeClaude, limit: Duration, within: Duration) -> Option<(Duration, StallObservation)> {
         let mut watch = StallWatch::new();
         let mut reader: Option<SessionLogReader> = None;
         let deadline = Instant::now() + within;
         while Instant::now() < deadline {
             fake.pump(Duration::from_millis(50));
             if reader.is_none() {
-                reader = fake
-                    .log_path(SID)
-                    .and_then(|path| SessionLogReader::open(&path, SID));
+                reader = fake.log_path(SID).and_then(|path| SessionLogReader::open(&path, SID));
             }
-            let Some(reader) = reader.as_mut() else {
-                continue;
-            };
+            let Some(reader) = reader.as_mut() else { continue };
             reader.refresh();
             let log = reader.summary();
             let seen = StallObservation {
@@ -1089,33 +1043,22 @@ mod recovery {
             ] }
         ]});
         let mut fake = home.run(&hung, &["--session-id", SID, "Implement the plan"]);
-        let (quiet, seen) =
-            watch_for_stall(&mut fake, limit, WAIT).expect("the hung tool never stalled");
+        let (quiet, seen) = watch_for_stall(&mut fake, limit, WAIT).expect("the hung tool never stalled");
         assert!(quiet >= limit && seen.working, "{quiet:?} {seen:?}");
-        assert!(
-            seen.pty_quiet.unwrap() >= limit,
-            "the terminal was quiet too: {seen:?}"
-        );
+        assert!(seen.pty_quiet.unwrap() >= limit, "the terminal was quiet too: {seen:?}");
 
         let def = find_pipeline("full").unwrap();
         let mut run = running_run();
         let tab = current_stage_tabs(&def, &run).remove(0);
         let why = stop_stalled(&mut run, &tab, quiet).unwrap();
-        assert_eq!(
-            (run.status, run.stop_reason),
-            (RunStatus::Waiting, Some(StopReason::Stalled))
-        );
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::Stalled)));
         assert!(why.starts_with("Implementer has been quiet for"), "{why}");
         quit(&mut fake);
 
         let other = FakeHome::new("h3_done_turn");
         let done = json!({ "turns": [ { "steps": [ { "reply": "Done." } ] } ]});
         let mut fake = other.run(&done, &["--session-id", SID, "Implement the plan"]);
-        assert_eq!(
-            watch_for_stall(&mut fake, limit, limit * 3),
-            None,
-            "a finished turn is not Working"
-        );
+        assert_eq!(watch_for_stall(&mut fake, limit, limit * 3), None, "a finished turn is not Working");
         quit(&mut fake);
     }
 }
@@ -1127,9 +1070,9 @@ mod recovery {
 mod bridge {
     use super::*;
     use dcterminal_lib::testing::{
-        bridged_command, claude_terminal_args, drain_inbox, launch_flags, prepare_stage,
-        read_stage_turn, runs_root, BridgePlan, BridgeTag, BridgeTurn, InboxEvent, ProgramArgs,
-        ResultKind, RunMode, TerminalKind, TerminalLaunch, TurnOutcome,
+        bridged_command, claude_terminal_args, drain_inbox, launch_flags, prepare_stage, read_stage_turn, runs_root,
+        BridgePlan, BridgeTag, BridgeTurn, InboxEvent, ProgramArgs, ResultKind, RunMode, TerminalKind, TerminalLaunch,
+        TurnOutcome,
     };
     use serde_json::json;
 
@@ -1159,12 +1102,7 @@ mod bridge {
                 autopilot,
             };
             let run_dir = prepare_stage(&runs, &plan, TAB).expect("prepare stage");
-            Self {
-                home: FakeHome::new(tag),
-                runs,
-                run_dir,
-                _data: data,
-            }
+            Self { home: FakeHome::new(tag), runs, run_dir, _data: data }
         }
 
         fn launch(&self, scenario: &Value) -> FakeClaude {
@@ -1181,14 +1119,7 @@ mod bridge {
                 session_id: Some(SID.into()),
                 settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
             };
-            let flags = launch_flags(
-                ResultKind::Reviewer,
-                Path::new(DCTERMINAL),
-                &self.run_dir,
-                RUN,
-                "pr_reviewer",
-                TAB,
-            );
+            let flags = launch_flags(ResultKind::Reviewer, Path::new(DCTERMINAL), &self.run_dir, RUN, "pr_reviewer", TAB);
             let args = bridged_command(request, Some(flags), |req| {
                 Ok(ProgramArgs::new("claude", claude_terminal_args(req)?))
             })
@@ -1200,10 +1131,7 @@ mod bridge {
 
         /// Wait for the stage's turn to end; the turn as Continue reads it.
         fn wait_turn(&self, fake: &mut FakeClaude) -> BridgeTurn {
-            let tag = BridgeTag {
-                run_id: RUN.into(),
-                stage: "pr_reviewer".into(),
-            };
+            let tag = BridgeTag { run_id: RUN.into(), stage: "pr_reviewer".into() };
             let deadline = Instant::now() + WAIT;
             loop {
                 if let Some(turn) = read_stage_turn(&self.runs, &tag, TAB) {
@@ -1253,12 +1181,7 @@ mod bridge {
         ] });
         let mut fake = stage.launch(&scenario);
         let turn = stage.wait_turn(&mut fake);
-        assert_eq!(
-            turn.outcome,
-            TurnOutcome::Result,
-            "screen:\n{}",
-            fake.screen()
-        );
+        assert_eq!(turn.outcome, TurnOutcome::Result, "screen:\n{}", fake.screen());
         assert!(turn.blocked, "the first stop was blocked");
         assert_eq!(turn.last_assistant_message, "Submitted the result.");
         let result = turn.result.clone().expect("result");
@@ -1268,10 +1191,7 @@ mod bridge {
         // The screen shows the block, and the tool's answers came back.
         let screen = fake.screen();
         assert!(screen.contains("Stop hook error"), "{screen}");
-        assert!(
-            screen.contains("mcp__dcterminal__submit_result"),
-            "{screen}"
-        );
+        assert!(screen.contains("mcp__dcterminal__submit_result"), "{screen}");
         // The watcher's view: exactly one finished turn.
         let events = stage.inbox();
         assert_eq!(events.len(), 1);
@@ -1286,10 +1206,7 @@ mod bridge {
             .collect();
         assert_eq!(results.len(), 2, "{results:?}");
         assert_eq!(results[0]["is_error"], true);
-        assert!(results[0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("`verdict` \"REQUEST CHANGES\" is not one of"));
+        assert!(results[0]["content"].as_str().unwrap().contains("`verdict` \"REQUEST CHANGES\" is not one of"));
         assert_eq!(results[1]["is_error"], false);
     }
 
@@ -1310,21 +1227,10 @@ mod bridge {
         assert_eq!(turn.outcome, TurnOutcome::NoResult);
         assert!(turn.blocked);
         assert!(turn.result.is_none());
-        assert_eq!(
-            turn.last_assistant_message,
-            "Which verdict should I submit?"
-        );
+        assert_eq!(turn.last_assistant_message, "Which verdict should I submit?");
         assert_eq!(fake.wait_exit(), Some(0));
-        assert!(
-            !fake.screen().contains("never reached"),
-            "blocked once, not twice"
-        );
-        assert_eq!(
-            fake.screen().matches("Stop hook error").count(),
-            1,
-            "{}",
-            fake.screen()
-        );
+        assert!(!fake.screen().contains("never reached"), "blocked once, not twice");
+        assert_eq!(fake.screen().matches("Stop hook error").count(), 1, "{}", fake.screen());
         assert_eq!(stage.inbox().len(), 1);
     }
 
@@ -1351,10 +1257,7 @@ mod bridge {
         assert!(!events[0].blocked);
         // A turn without the tool on a manual run just ends.
         assert_eq!(events[1].outcome, TurnOutcome::NoResult);
-        assert_ne!(
-            events[0].turn, events[1].turn,
-            "each turn has its own prompt_id"
-        );
+        assert_ne!(events[0].turn, events[1].turn, "each turn has its own prompt_id");
         assert!(!fake.screen().contains("never reached"));
     }
 }
@@ -1369,10 +1272,9 @@ mod bridge {
 mod eagle_eye_1 {
     use super::*;
     use dcterminal_lib::testing::{
-        bridged_command, claude_terminal_args, decide, drain_inbox, find_pipeline, launch_flags,
-        prepare_stage, read_run_tasks, runs_root, BridgeNeeds, BridgePlan, BridgeTurn,
-        FindingReport, InboxEvent, NeedsSource, PipelineRun, ProgramArgs, ResultKind, RunMode,
-        TerminalKind, TerminalLaunch, TurnOutcome, TurnReport,
+        bridged_command, claude_terminal_args, decide, drain_inbox, find_pipeline, launch_flags, prepare_stage,
+        read_run_tasks, runs_root, BridgeNeeds, BridgePlan, BridgeTurn, FindingReport, InboxEvent, NeedsSource,
+        PipelineRun, ProgramArgs, ResultKind, RunMode, TerminalKind, TerminalLaunch, TurnOutcome, TurnReport,
     };
     use serde_json::json;
 
@@ -1401,26 +1303,11 @@ mod eagle_eye_1 {
             let data = TempDir::new("ee1_data");
             let runs = runs_root(data.path());
             let run_dir = runs.join(RUN);
-            Self {
-                home: FakeHome::new("ee1"),
-                runs,
-                run_dir,
-                turns: Vec::new(),
-                needs: Vec::new(),
-                _data: data,
-            }
+            Self { home: FakeHome::new("ee1"), runs, run_dir, turns: Vec::new(), needs: Vec::new(), _data: data }
         }
 
         /// Launch `stage_id`'s claude in `tab`, bridged as `kind`, with session `sid`.
-        fn launch(
-            &self,
-            stage_id: &str,
-            role_id: &str,
-            kind: ResultKind,
-            tab: &str,
-            sid: &str,
-            scenario: &Value,
-        ) -> FakeClaude {
+        fn launch(&self, stage_id: &str, role_id: &str, kind: ResultKind, tab: &str, sid: &str, scenario: &Value) -> FakeClaude {
             let plan = BridgePlan {
                 run_id: RUN.into(),
                 stage_id: stage_id.into(),
@@ -1446,11 +1333,9 @@ mod eagle_eye_1 {
                 settings: Some(json!({ "statusLine": { "type": "command", "command": "true" } })),
             };
             let flags = launch_flags(kind, Path::new(DCTERMINAL), &run_dir, RUN, stage_id, tab);
-            let args = bridged_command(request, Some(flags), |req| {
-                Ok(ProgramArgs::new("claude", claude_terminal_args(req)?))
-            })
-            .expect("bridged launch")
-            .args;
+            let args = bridged_command(request, Some(flags), |req| Ok(ProgramArgs::new("claude", claude_terminal_args(req)?)))
+                .expect("bridged launch")
+                .args;
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             self.home.run(scenario, &args)
         }
@@ -1471,11 +1356,7 @@ mod eagle_eye_1 {
                 if let Some(needs) = self.needs.pop() {
                     return needs;
                 }
-                assert!(
-                    Instant::now() < deadline,
-                    "no Needs you; screen:\n{}",
-                    fake.screen()
-                );
+                assert!(Instant::now() < deadline, "no Needs you; screen:\n{}", fake.screen());
                 fake.pump(Duration::from_millis(30));
             }
         }
@@ -1491,10 +1372,7 @@ mod eagle_eye_1 {
                 std::fs::read_to_string(self.run_dir.join("bridge.log")).unwrap_or_default()
             );
             self.drain();
-            let turn = self
-                .turns
-                .pop()
-                .unwrap_or_else(|| panic!("{stage_id}: no turn end; screen:\n{}", fake.screen()));
+            let turn = self.turns.pop().unwrap_or_else(|| panic!("{stage_id}: no turn end; screen:\n{}", fake.screen()));
             assert_eq!(turn.stage_key, stage_id);
             assert!(self.turns.is_empty(), "{stage_id} ended one turn");
             turn
@@ -1579,44 +1457,24 @@ mod eagle_eye_1 {
         );
         let turn = run.finish(&mut planner, "planner");
         let screen = planner.screen();
-        assert!(
-            !screen.contains("Would you like to proceed"),
-            "no plan dialog:\n{screen}"
-        );
-        assert!(
-            screen.contains("PreToolUse:ExitPlanMode hook error: Plan received"),
-            "{screen}"
-        );
+        assert!(!screen.contains("Would you like to proceed"), "no plan dialog:\n{screen}");
+        assert!(screen.contains("PreToolUse:ExitPlanMode hook error: Plan received"), "{screen}");
         let results = tool_results(&planner, SIDS[0]);
         assert_eq!(results.len(), 2, "{results:?}");
         assert_eq!(results[0]["is_error"], true);
-        assert!(results[0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("pr1 depends on \"pr7\", which is not a task"));
-        assert!(results[1]["content"]
-            .as_str()
-            .unwrap()
-            .starts_with("Plan received by DCTerminal"));
+        assert!(results[0]["content"].as_str().unwrap().contains("pr1 depends on \"pr7\", which is not a task"));
+        assert!(results[1]["content"].as_str().unwrap().starts_with("Plan received by DCTerminal"));
         assert_eq!(turn.outcome, TurnOutcome::Result);
         assert!(!turn.blocked);
-        assert_eq!(
-            turn.last_assistant_message,
-            "The plan is written and DCTerminal received it."
-        );
+        assert_eq!(turn.last_assistant_message, "The plan is written and DCTerminal received it.");
         let tasks = read_run_tasks(&run.runs, RUN).expect("tasks.json");
         let ids: Vec<&str> = tasks.tasks.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["pr1", "pr2"]);
         assert_eq!(tasks.tasks[1].depends_on, ["pr1"]);
         assert_eq!(turn.result.as_ref().unwrap()["tasks"][1]["id"], "pr2");
-        assert!(std::fs::read_to_string(run.run_dir.join("plan.md"))
-            .unwrap()
-            .contains("Refresh tokens in src/auth.ts"));
+        assert!(std::fs::read_to_string(run.run_dir.join("plan.md")).unwrap().contains("Refresh tokens in src/auth.ts"));
         let decision = decide(&def, &mut state, &report(&turn));
-        assert_eq!(
-            (decision.action.as_str(), decision.stage_id.as_deref()),
-            ("advance", Some("plan_reviewer"))
-        );
+        assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("advance", Some("plan_reviewer")));
 
         // 2. Plan Reviewer: its verdict through submit_result.
         let mut reviewer = run.launch(
@@ -1636,10 +1494,7 @@ mod eagle_eye_1 {
         let turn = run.finish(&mut reviewer, "plan_reviewer");
         assert_eq!(turn.result.as_ref().unwrap()["verdict"], "APPROVED");
         let decision = decide(&def, &mut state, &report(&turn));
-        assert_eq!(
-            (decision.action.as_str(), decision.stage_id.as_deref()),
-            ("advance", Some("implementer"))
-        );
+        assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("advance", Some("implementer")));
 
         // 3. Implementer: a permission dialog is Needs you at once (the
         //    Notification backup is not posted again), then its pull requests.
@@ -1666,31 +1521,16 @@ mod eagle_eye_1 {
         assert_eq!(needs.source, NeedsSource::PermissionRequest);
         assert_eq!(needs.tool.as_deref(), Some("Bash"));
         assert_eq!(needs.tab_id, "tab_implementer");
-        assert!(
-            implementer.wait_screen("Do you want to proceed?"),
-            "the dialog is still up for you"
-        );
+        assert!(implementer.wait_screen("Do you want to proceed?"), "the dialog is still up for you");
         implementer.write(b"1");
         let turn = run.finish(&mut implementer, "implementer");
-        assert!(
-            run.needs.is_empty(),
-            "one Needs you per prompt: {:?}",
-            run.needs
-        );
+        assert!(run.needs.is_empty(), "one Needs you per prompt: {:?}", run.needs);
         assert_eq!(turn.outcome, TurnOutcome::Result);
-        assert_eq!(
-            turn.result.as_ref().unwrap()["prs"][0]["url"],
-            "https://github.com/acme/app/pull/12"
-        );
-        let prs: Value =
-            serde_json::from_str(&std::fs::read_to_string(run.run_dir.join("prs.json")).unwrap())
-                .unwrap();
+        assert_eq!(turn.result.as_ref().unwrap()["prs"][0]["url"], "https://github.com/acme/app/pull/12");
+        let prs: Value = serde_json::from_str(&std::fs::read_to_string(run.run_dir.join("prs.json")).unwrap()).unwrap();
         assert_eq!(prs["result"]["checks"][0]["command"], "npm test");
         let decision = decide(&def, &mut state, &report(&turn));
-        assert_eq!(
-            (decision.action.as_str(), decision.stage_id.as_deref()),
-            ("advance", Some("pr_reviewer"))
-        );
+        assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("advance", Some("pr_reviewer")));
 
         // 4. PR Reviewer: changes required, so the round goes back to the Implementer.
         let mut reviewer = run.launch(
@@ -1712,10 +1552,7 @@ mod eagle_eye_1 {
         let turn = run.finish(&mut reviewer, "pr_reviewer");
         assert_eq!(turn.result.as_ref().unwrap()["verdict"], "CHANGES_REQUIRED");
         let decision = decide(&def, &mut state, &report(&turn));
-        assert_eq!(
-            (decision.action.as_str(), decision.stage_id.as_deref()),
-            ("loopBack", Some("implementer"))
-        );
+        assert_eq!((decision.action.as_str(), decision.stage_id.as_deref()), ("loopBack", Some("implementer")));
     }
 }
 
@@ -1734,11 +1571,10 @@ mod eagle_eye_1 {
 mod run_actor {
     use super::*;
     use dcterminal_lib::testing::{
-        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, fan_out, launch_flags,
-        paste_bytes, prepare_stage, runs_root, write_run_repos, ActorMsg, AppStateFile, BridgePlan,
-        BridgeTag, ChainRef, GateDef, GateResult, Host, InboxEvent, LaneInput, PipelineRun,
-        ProgramArgs, RepoEntry, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch,
-        StateStore, StopReason, TerminalKind, TerminalLaunch, UserAction, MAIN_WINDOW_ID,
+        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, fan_out, launch_flags, paste_bytes, prepare_stage,
+        runs_root, write_run_repos, ActorMsg, LaneInput, AppStateFile, BridgePlan, BridgeTag, ChainRef, GateDef, GateResult, Host, InboxEvent, PipelineRun,
+        ProgramArgs, RepoEntry, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch, StateStore, StopReason,
+        TerminalKind, TerminalLaunch, UserAction, MAIN_WINDOW_ID,
     };
     use serde_json::json;
     use std::collections::{HashMap, VecDeque};
@@ -1818,14 +1654,8 @@ mod run_actor {
                 program: FAKE_CLAUDE.into(),
                 args,
                 env: vec![
-                    (
-                        "CLAUDE_CONFIG_DIR".into(),
-                        self.home.config.path().display().to_string(),
-                    ),
-                    (
-                        "DCT_FAKE_CLAUDE_SCENARIO".into(),
-                        file.display().to_string(),
-                    ),
+                    ("CLAUDE_CONFIG_DIR".into(), self.home.config.path().display().to_string()),
+                    ("DCT_FAKE_CLAUDE_SCENARIO".into(), file.display().to_string()),
                 ],
                 cwd: launch.cwd.clone(),
                 cols: 120,
@@ -1848,14 +1678,7 @@ mod run_actor {
                     }
                 }
             });
-            self.terminals.lock().unwrap().insert(
-                launch.tab_id.clone(),
-                Terminal {
-                    session,
-                    screen,
-                    exited,
-                },
-            );
+            self.terminals.lock().unwrap().insert(launch.tab_id.clone(), Terminal { session, screen, exited });
         }
 
         fn next_scenario(&self, role_id: &str) -> Result<Value, String> {
@@ -1871,9 +1694,7 @@ mod run_actor {
             let terminals = self.terminals.lock().unwrap();
             terminals
                 .iter()
-                .map(|(tab, t)| {
-                    format!("--- {tab} ---\n{}", plain_screen(&t.screen.lock().unwrap()))
-                })
+                .map(|(tab, t)| format!("--- {tab} ---\n{}", plain_screen(&t.screen.lock().unwrap())))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -1921,21 +1742,12 @@ mod run_actor {
         }
         fn paste(&self, tab_id: &str, text: &str) -> Result<(), String> {
             let terminals = self.terminals.lock().unwrap();
-            let terminal = terminals
-                .get(tab_id)
-                .ok_or_else(|| format!("no terminal {tab_id}"))?;
+            let terminal = terminals.get(tab_id).ok_or_else(|| format!("no terminal {tab_id}"))?;
             // The app's bytes (`PtyRegistry::paste`): Ctrl+U first (D40).
-            terminal
-                .session
-                .write(&paste_bytes(text))
-                .map_err(|err| err.to_string())
+            terminal.session.write(&paste_bytes(text)).map_err(|err| err.to_string())
         }
         fn terminal_live(&self, tab_id: &str) -> bool {
-            self.terminals
-                .lock()
-                .unwrap()
-                .get(tab_id)
-                .is_some_and(|t| !t.exited.load(Ordering::SeqCst))
+            self.terminals.lock().unwrap().get(tab_id).is_some_and(|t| !t.exited.load(Ordering::SeqCst))
         }
         fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult {
             let GateDef::Command { .. } = gate else {
@@ -1960,12 +1772,7 @@ mod run_actor {
                 kind: "command".into(),
                 label: "npm run check".into(),
                 status: if passed { "passed" } else { "failed" }.into(),
-                summary: if passed {
-                    "Passed."
-                } else {
-                    "Exited with code 1."
-                }
-                .into(),
+                summary: if passed { "Passed." } else { "Exited with code 1." }.into(),
                 output: String::from_utf8_lossy(&ran.stdout).trim().to_string(),
                 duration_ms: 1,
                 optional: false,
@@ -1977,27 +1784,16 @@ mod run_actor {
         fn rate_limit(&self, _tab_id: &str) -> Option<String> {
             None
         }
-        fn bridge_gate(
-            &self,
-            _run_id: &str,
-            _stage_key: &str,
-            _cwd: &Path,
-        ) -> Result<bool, String> {
+        fn bridge_gate(&self, _run_id: &str, _stage_key: &str, _cwd: &Path) -> Result<bool, String> {
             Ok(true)
         }
         fn run_changed(&self, _run_id: &str) {}
         fn tab_opened(&self, _run_id: &str, _tab_id: &str) {}
         fn stopped(&self, _run_id: &str, _tab_id: Option<&str>, reason: StopReason, summary: &str) {
-            self.stops
-                .lock()
-                .unwrap()
-                .push(format!("{reason:?}: {summary}"));
+            self.stops.lock().unwrap().push(format!("{reason:?}: {summary}"));
         }
         fn notice(&self, _run_id: &str, title: &str, body: &str) {
-            self.notices
-                .lock()
-                .unwrap()
-                .push(format!("{title}: {body}"));
+            self.notices.lock().unwrap().push(format!("{title}: {body}"));
         }
         fn repos(&self) -> Vec<RepoEntry> {
             self.repos.clone()
@@ -2052,17 +1848,11 @@ mod run_actor {
     /// terminals (a resumed `fake_claude` runs a scenario of its own).
     fn scenarios() -> HashMap<String, VecDeque<Value>> {
         HashMap::from([
-            (
-                "role_planner".to_string(),
-                VecDeque::from([planned("v2", "The plan is revised.")]),
-            ),
+            ("role_planner".to_string(), VecDeque::from([planned("v2", "The plan is revised.")])),
             (
                 "role_plan_reviewer".to_string(),
                 VecDeque::from([
-                    reviewed(
-                        "CHANGES_REQUIRED",
-                        json!([{ "severity": "HIGH", "file": "src/auth.ts:42", "summary": "It retries forever." }]),
-                    ),
+                    reviewed("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "file": "src/auth.ts:42", "summary": "It retries forever." }])),
                     reviewed("APPROVED", json!([])),
                 ]),
             ),
@@ -2077,10 +1867,7 @@ mod run_actor {
             (
                 "role_pr_reviewer".to_string(),
                 VecDeque::from([
-                    reviewed(
-                        "CHANGES_REQUIRED",
-                        json!([{ "severity": "MEDIUM", "file": "src/auth.ts:57", "summary": "No test for a second expiry." }]),
-                    ),
+                    reviewed("CHANGES_REQUIRED", json!([{ "severity": "MEDIUM", "file": "src/auth.ts:57", "summary": "No test for a second expiry." }])),
                     reviewed("APPROVED", json!([])),
                 ]),
             ),
@@ -2099,48 +1886,19 @@ mod run_actor {
                 ("cwd".to_string(), cwd.clone()),
                 ("taskType".to_string(), "Bug".to_string()),
                 ("title".to_string(), "Expired tokens".to_string()),
-                (
-                    "request".to_string(),
-                    "Refresh expired tokens instead of failing.".to_string(),
-                ),
-                (
-                    "expectedBehavior".to_string(),
-                    "One retry with a fresh token.".to_string(),
-                ),
+                ("request".to_string(), "Refresh expired tokens instead of failing.".to_string()),
+                ("expectedBehavior".to_string(), "One retry with a fresh token.".to_string()),
                 ("currentBehavior".to_string(), "It returns 500.".to_string()),
             ]);
-            store
-                .data
-                .tabs
-                .iter_mut()
-                .find(|t| t.id == tab)
-                .unwrap()
-                .answers = answers;
-            let chain = ChainRef {
-                chain_id: RUN.into(),
-                kind: "eagle1".into(),
-                step: 1,
-                total: 4,
-                round: 1,
-                lane: None,
-            };
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = answers;
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 1, total: 4, round: 1, lane: None };
             store.set_tab_chain(&tab, Some(chain), None).unwrap();
             let run = store.pipeline_run_by_id_mut(RUN).expect("the run");
             assert_eq!(run.engine, 2, "Eagle-Eye 1 runs on engine 2");
             run.set_autopilot_enabled(true);
-            store
-                .set_tab_bridge(
-                    &tab,
-                    Some(BridgeTag {
-                        run_id: RUN.into(),
-                        stage: "planner".into(),
-                    }),
-                )
-                .unwrap();
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
             // As `role_terminal_start` does: the tab knows its session.
-            store
-                .remember_claude_terminal_session(&tab, PLANNER_SID)
-                .unwrap();
+            store.remember_claude_terminal_session(&tab, PLANNER_SID).unwrap();
             store.save().unwrap();
             tab
         };
@@ -2161,38 +1919,19 @@ mod run_actor {
             cwd: host.home.cwd.path().to_path_buf(),
             prompt: "Plan the token refresh.".into(),
             session_id: PLANNER_SID.into(),
-            bridge: Some(launch_flags(
-                ResultKind::Planner,
-                Path::new(DCTERMINAL),
-                &run_dir,
-                RUN,
-                "planner",
-                &planner,
-            )),
+            bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
         };
         host.start(&launch, &planned("v1", "The plan is written."), false);
     }
 
     fn snapshot(host: &FakeHost) -> PipelineRun {
-        host.store
-            .lock()
-            .unwrap()
-            .pipeline_run_by_id(RUN)
-            .cloned()
-            .expect("the run")
+        host.store.lock().unwrap().pipeline_run_by_id(RUN).cloned().expect("the run")
     }
 
     fn ledger(run: &PipelineRun) -> String {
         run.events
             .iter()
-            .map(|e| {
-                format!(
-                    "{} [{}] {}",
-                    e.kind,
-                    e.outcome.clone().unwrap_or_default(),
-                    e.summary
-                )
-            })
+            .map(|e| format!("{} [{}] {}", e.kind, e.outcome.clone().unwrap_or_default(), e.summary))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -2203,23 +1942,14 @@ mod run_actor {
         log_records(&path, false)
             .into_iter()
             .filter(|r| r["type"] == "user" && r["message"]["content"].is_string())
-            .map(|r| {
-                r["message"]["content"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string()
-            })
+            .map(|r| r["message"]["content"].as_str().unwrap_or_default().to_string())
             .collect()
     }
 
     /// How many session logs `session_id` has under the fake config folder.
     fn session_logs(host: &FakeHost, session_id: &str) -> usize {
         std::fs::read_dir(host.home.config.path().join("projects"))
-            .map(|dirs| {
-                dirs.flatten()
-                    .filter(|dir| dir.path().join(format!("{session_id}.jsonl")).is_file())
-                    .count()
-            })
+            .map(|dirs| dirs.flatten().filter(|dir| dir.path().join(format!("{session_id}.jsonl")).is_file()).count())
             .unwrap_or(0)
     }
 
@@ -2282,23 +2012,15 @@ mod run_actor {
                             Duration::from_secs(30),
                         )
                         .expect("your Send");
-                    assert!(
-                        outcome.tab_id.is_some() && outcome.warning.is_none(),
-                        "{outcome:?}"
-                    );
+                    assert!(outcome.tab_id.is_some() && outcome.warning.is_none(), "{outcome:?}");
                 }
                 (RunStatus::Running, _) => {}
-                (status, reason)
-                    if !(status == RunStatus::Waiting
-                        && reason == Some(StopReason::Checkpoint)) =>
-                {
-                    panic!(
-                        "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
-                        ledger(&run),
-                        host.stops.lock().unwrap(),
-                        host.screens()
-                    )
-                }
+                (status, reason) if !(status == RunStatus::Waiting && reason == Some(StopReason::Checkpoint)) => panic!(
+                    "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
+                    ledger(&run),
+                    host.stops.lock().unwrap(),
+                    host.screens()
+                ),
                 _ => {}
             }
             assert!(
@@ -2315,39 +2037,16 @@ mod run_actor {
         let all = ledger(&run);
         // Every stage the actor opened, in order: the review rounds each got
         // a new reviewer; the rounds sent back resumed the earlier stages.
-        let roles: Vec<String> = host
-            .launches
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|l| l.role_id.clone())
-            .collect();
+        let roles: Vec<String> = host.launches.lock().unwrap().iter().map(|l| l.role_id.clone()).collect();
         assert_eq!(
             roles,
-            [
-                "role_plan_reviewer",
-                "role_plan_reviewer",
-                "role_implementer",
-                "role_pr_reviewer",
-                "role_pr_reviewer"
-            ],
+            ["role_plan_reviewer", "role_plan_reviewer", "role_implementer", "role_pr_reviewer", "role_pr_reviewer"],
             "{all}"
         );
         // The loop-backs: the plan review round, then the PR review round.
-        let sent_back: Vec<&str> = run
-            .events
-            .iter()
-            .filter(|e| e.kind == "loopBack")
-            .map(|e| e.summary.as_str())
-            .collect();
-        assert_eq!(
-            sent_back,
-            [
-                "Round 1 sent back (REQUIRES REVISION)",
-                "Round 2 sent back (REQUEST CHANGES)"
-            ],
-            "{all}"
-        );
+        let sent_back: Vec<&str> =
+            run.events.iter().filter(|e| e.kind == "loopBack").map(|e| e.summary.as_str()).collect();
+        assert_eq!(sent_back, ["Round 1 sent back (REQUIRES REVISION)", "Round 2 sent back (REQUEST CHANGES)"], "{all}");
         // The failed gate, its retry, then passes.
         let gates: Vec<&str> = run
             .events
@@ -2356,156 +2055,60 @@ mod run_actor {
             .map(|e| e.outcome.as_deref().unwrap_or_default())
             .collect();
         assert_eq!(gates, ["failed", "passed", "passed"], "{all}");
-        assert!(
-            run.events
-                .iter()
-                .any(|e| e.outcome.as_deref() == Some("retry")),
-            "{all}"
-        );
-        assert_eq!(
-            run.events.last().map(|e| e.kind.as_str()),
-            Some("complete"),
-            "{all}"
-        );
-        assert!(host
-            .notices
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|n| n.starts_with("Run complete")));
-        assert!(
-            host.stops
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|s| s.starts_with("Checkpoint")),
-            "{:?}",
-            host.stops.lock().unwrap()
-        );
+        assert!(run.events.iter().any(|e| e.outcome.as_deref() == Some("retry")), "{all}");
+        assert_eq!(run.events.last().map(|e| e.kind.as_str()), Some("complete"), "{all}");
+        assert!(host.notices.lock().unwrap().iter().any(|n| n.starts_with("Run complete")));
+        assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
 
         // V4: each round sent back resumed the stage's own session in its tab.
         let implementer = host.launches.lock().unwrap()[2].clone();
         let resumes = host.resumes.lock().unwrap().clone();
-        let resumed: Vec<(&str, &str, &str)> = resumes
-            .iter()
-            .map(|r| (r.role_id.as_str(), r.session_id.as_str(), r.tab_id.as_str()))
-            .collect();
+        let resumed: Vec<(&str, &str, &str)> =
+            resumes.iter().map(|r| (r.role_id.as_str(), r.session_id.as_str(), r.tab_id.as_str())).collect();
         let planner_tab = run.tab_ids["role_planner"].as_str();
         assert_eq!(
             resumed,
             [
                 ("role_planner", PLANNER_SID, planner_tab),
-                (
-                    "role_implementer",
-                    implementer.session_id.as_str(),
-                    implementer.tab_id.as_str()
-                ),
-                (
-                    "role_implementer",
-                    implementer.session_id.as_str(),
-                    implementer.tab_id.as_str()
-                ),
+                ("role_implementer", implementer.session_id.as_str(), implementer.tab_id.as_str()),
+                ("role_implementer", implementer.session_id.as_str(), implementer.tab_id.as_str()),
             ],
             "{all}"
         );
-        assert_eq!(
-            host.forced.load(Ordering::SeqCst),
-            0,
-            "every old fake_claude exited on SIGTERM"
-        );
-        assert_eq!(
-            (
-                session_logs(&host, PLANNER_SID),
-                session_logs(&host, &implementer.session_id)
-            ),
-            (1, 1),
-            "one log each"
-        );
+        assert_eq!(host.forced.load(Ordering::SeqCst), 0, "every old fake_claude exited on SIGTERM");
+        assert_eq!((session_logs(&host, PLANNER_SID), session_logs(&host, &implementer.session_id)), (1, 1), "one log each");
 
         // The Planner was asked once to revise, in its own session, pointed at the findings file.
         let planner = prompts(&host, PLANNER_SID);
         assert_eq!(planner.len(), 2, "{planner:?}");
         let plan_findings = host.runs.join(RUN).join("findings-plan_reviewer-r1.json");
-        assert!(
-            planner[1].starts_with("Review findings from the Plan Reviewer (round 1)"),
-            "{}",
-            planner[1]
-        );
-        assert!(
-            planner[1].contains(&plan_findings.display().to_string()),
-            "{}",
-            planner[1]
-        );
-        assert!(
-            planner[1].contains("1. [HIGH] src/auth.ts:42: It retries forever."),
-            "{}",
-            planner[1]
-        );
-        let saved: Value =
-            serde_json::from_slice(&std::fs::read(&plan_findings).expect("findings file")).unwrap();
-        assert_eq!(
-            saved["findings"][0]["summary"],
-            json!("It retries forever.")
-        );
+        assert!(planner[1].starts_with("Review findings from the Plan Reviewer (round 1)"), "{}", planner[1]);
+        assert!(planner[1].contains(&plan_findings.display().to_string()), "{}", planner[1]);
+        assert!(planner[1].contains("1. [HIGH] src/auth.ts:42: It retries forever."), "{}", planner[1]);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&plan_findings).expect("findings file")).unwrap();
+        assert_eq!(saved["findings"][0]["summary"], json!("It retries forever."));
         // One Implementer session: its prompt from plan.md, the check's output, the review round.
-        assert!(
-            implementer.prompt.contains("(v2)"),
-            "the revised plan from plan.md"
-        );
+        assert!(implementer.prompt.contains("(v2)"), "the revised plan from plan.md");
         assert!(implementer.prompt.contains("Bug Fix"));
-        assert!(
-            implementer
-                .prompt
-                .contains(&host.runs.join(RUN).join("plan.md").display().to_string()),
-            "points at plan.md"
-        );
+        assert!(implementer.prompt.contains(&host.runs.join(RUN).join("plan.md").display().to_string()), "points at plan.md");
         let turns = prompts(&host, &implementer.session_id);
         assert_eq!(turns.len(), 3, "{turns:?}");
-        assert!(
-            turns[1].contains("FAIL src/auth.test.ts: expected 200, got 500"),
-            "{}",
-            turns[1]
-        );
-        assert!(
-            turns[2].starts_with("Review findings from the PR Reviewer (round 1)"),
-            "{}",
-            turns[2]
-        );
-        assert!(
-            turns[2].contains("findings-pr_reviewer-r1.json"),
-            "{}",
-            turns[2]
-        );
-        assert!(
-            turns[2].contains("src/auth.ts:57: No test for a second expiry."),
-            "{}",
-            turns[2]
-        );
+        assert!(turns[1].contains("FAIL src/auth.test.ts: expected 200, got 500"), "{}", turns[1]);
+        assert!(turns[2].starts_with("Review findings from the PR Reviewer (round 1)"), "{}", turns[2]);
+        assert!(turns[2].contains("findings-pr_reviewer-r1.json"), "{}", turns[2]);
+        assert!(turns[2].contains("src/auth.ts:57: No test for a second expiry."), "{}", turns[2]);
         // The PR Reviewer read the pull request from prs.json.
         let reviewer = host.launches.lock().unwrap()[3].clone();
         assert!(
-            reviewer.prompt.contains(
-                "Pull request: https://github.com/acme/app/pull/12 (branch `fix/refresh`)"
-            ),
+            reviewer.prompt.contains("Pull request: https://github.com/acme/app/pull/12 (branch `fix/refresh`)"),
             "{}",
             reviewer.prompt
         );
         // Each second review is told what its own first round sent back.
         let launches = host.launches.lock().unwrap().clone();
-        assert!(
-            launches[1].prompt.contains("It retries forever."),
-            "{}",
-            launches[1].prompt
-        );
-        assert!(
-            launches[4].prompt.contains("No test for a second expiry."),
-            "{}",
-            launches[4].prompt
-        );
-        assert!(
-            !launches[4].prompt.contains("It retries forever."),
-            "not the plan review's findings"
-        );
+        assert!(launches[1].prompt.contains("It retries forever."), "{}", launches[1].prompt);
+        assert!(launches[4].prompt.contains("No test for a second expiry."), "{}", launches[4].prompt);
+        assert!(!launches[4].prompt.contains("It retries forever."), "not the plan review's findings");
         assert_eq!(run.verdicts.len(), 2);
         assert_eq!((run.round, run.status), (3, RunStatus::Complete));
         // Each Implementer turn's pull-request gate checked the pull request
@@ -2513,11 +2116,7 @@ mod run_actor {
         let pr_gates = host.pr_gate_urls.lock().unwrap().clone();
         assert!(!pr_gates.is_empty());
         for urls in &pr_gates {
-            assert_eq!(
-                urls,
-                &vec!["https://github.com/acme/app/pull/12".to_string()],
-                "{pr_gates:?}"
-            );
+            assert_eq!(urls, &vec!["https://github.com/acme/app/pull/12".to_string()], "{pr_gates:?}");
         }
     }
 
@@ -2528,22 +2127,11 @@ mod run_actor {
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
-            .args([
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@example.com",
-                "-c",
-                "init.defaultBranch=main",
-            ])
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main"])
             .args(args)
             .output()
             .expect("run git");
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
@@ -2596,14 +2184,8 @@ mod run_actor {
         let backend = repo(&parent, "backend");
         let engine = repo(&parent, "engine");
         let repos = vec![
-            RepoEntry {
-                name: "backend".into(),
-                folder: backend.display().to_string(),
-            },
-            RepoEntry {
-                name: "engine".into(),
-                folder: engine.display().to_string(),
-            },
+            RepoEntry { name: "backend".into(), folder: backend.display().to_string() },
+            RepoEntry { name: "engine".into(), folder: engine.display().to_string() },
         ];
         let state = StateStore {
             path: data.join("state.json"),
@@ -2612,10 +2194,7 @@ mod run_actor {
             draft_window: MAIN_WINDOW_ID.to_string(),
         };
         let scenarios = HashMap::from([
-            (
-                "role_plan_reviewer".to_string(),
-                VecDeque::from([reviewed("APPROVED", json!([]))]),
-            ),
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
             (
                 "role_implementer".to_string(),
                 VecDeque::from([
@@ -2626,13 +2205,7 @@ mod run_actor {
                     implemented_in("pr2", "https://github.com/acme/engine/pull/2"),
                 ]),
             ),
-            (
-                "role_pr_reviewer".to_string(),
-                VecDeque::from([
-                    reviewed("APPROVED", json!([])),
-                    reviewed("APPROVED", json!([])),
-                ]),
-            ),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([])), reviewed("APPROVED", json!([]))])),
         ]);
         let host = Arc::new(FakeHost {
             store: Mutex::new(state),
@@ -2651,11 +2224,7 @@ mod run_actor {
             _data: data,
         });
         // Never the real ~/.claude: every terminal gets this test's config folder.
-        assert!(
-            host.home.config.path().starts_with(test_root()),
-            "{}",
-            host.home.config.path().display()
-        );
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
         let actors = RunActors::new(host.clone());
 
         // The Planner, as `role_terminal_start` launches it: its run folder
@@ -2665,46 +2234,17 @@ mod run_actor {
             let mut store = host.store.lock().unwrap();
             let role = host.roles.iter().find(|r| r.id == "role_planner").unwrap();
             let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
-            store
-                .data
-                .tabs
-                .iter_mut()
-                .find(|t| t.id == tab)
-                .unwrap()
-                .answers = HashMap::from([
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = HashMap::from([
                 ("cwd".to_string(), cwd.clone()),
                 ("taskType".to_string(), "Feature".to_string()),
                 ("title".to_string(), "Sessions".to_string()),
-                (
-                    "request".to_string(),
-                    "Add sessions to the backend and the engine.".to_string(),
-                ),
+                ("request".to_string(), "Add sessions to the backend and the engine.".to_string()),
             ]);
-            let chain = ChainRef {
-                chain_id: RUN.into(),
-                kind: "eagle1".into(),
-                step: 1,
-                total: 4,
-                round: 1,
-                lane: None,
-            };
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 1, total: 4, round: 1, lane: None };
             store.set_tab_chain(&tab, Some(chain), None).unwrap();
-            store
-                .pipeline_run_by_id_mut(RUN)
-                .expect("the run")
-                .set_autopilot_enabled(true);
-            store
-                .set_tab_bridge(
-                    &tab,
-                    Some(BridgeTag {
-                        run_id: RUN.into(),
-                        stage: "planner".into(),
-                    }),
-                )
-                .unwrap();
-            store
-                .remember_claude_terminal_session(&tab, PLANNER_SID)
-                .unwrap();
+            store.pipeline_run_by_id_mut(RUN).expect("the run").set_autopilot_enabled(true);
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, PLANNER_SID).unwrap();
             store.save().unwrap();
             tab
         };
@@ -2731,14 +2271,7 @@ mod run_actor {
                 cwd: host.home.cwd.path().to_path_buf(),
                 prompt: "Plan sessions across the repos.".into(),
                 session_id: PLANNER_SID.into(),
-                bridge: Some(launch_flags(
-                    ResultKind::Planner,
-                    Path::new(DCTERMINAL),
-                    &run_dir,
-                    RUN,
-                    "planner",
-                    &planner,
-                )),
+                bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
             },
             &plan_turn,
             false,
@@ -2761,17 +2294,8 @@ mod run_actor {
                 if pr1.status != "approved" {
                     assert_eq!(pr2.status, "waiting", "{}", ledger(&run));
                     let engine_wt = canonical(&worktrees["pr2"]);
-                    let opened = host
-                        .launches
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .any(|l| canonical(&l.cwd) == engine_wt);
-                    assert!(
-                        !opened,
-                        "the engine lane opened before the backend was approved\n{}",
-                        ledger(&run)
-                    );
+                    let opened = host.launches.lock().unwrap().iter().any(|l| canonical(&l.cwd) == engine_wt);
+                    assert!(!opened, "the engine lane opened before the backend was approved\n{}", ledger(&run));
                     engine_seen_waiting = true;
                 }
             }
@@ -2797,10 +2321,7 @@ mod run_actor {
             );
             std::thread::sleep(Duration::from_millis(30));
         }
-        assert!(
-            engine_seen_waiting,
-            "the engine lane was seen waiting on the backend"
-        );
+        assert!(engine_seen_waiting, "the engine lane was seen waiting on the backend");
 
         let run = snapshot(&host);
         let all = ledger(&run);
@@ -2813,38 +2334,16 @@ mod run_actor {
 
         // Each worktree lives under its own repo, on the lane's branch.
         let (backend_wt, engine_wt) = (canonical(&worktrees["pr1"]), canonical(&worktrees["pr2"]));
-        assert!(
-            backend_wt.starts_with(canonical(parent.join("backend-worktrees"))),
-            "{}",
-            backend_wt.display()
-        );
-        assert!(
-            engine_wt.starts_with(canonical(parent.join("engine-worktrees"))),
-            "{}",
-            engine_wt.display()
-        );
-        assert_eq!(
-            canonical(git(&backend_wt, &["rev-parse", "--git-common-dir"]).replace("/.git", "")),
-            canonical(&backend)
-        );
-        assert_eq!(
-            canonical(git(&engine_wt, &["rev-parse", "--git-common-dir"]).replace("/.git", "")),
-            canonical(&engine)
-        );
-        assert_eq!(
-            git(&engine_wt, &["branch", "--show-current"]),
-            format!("{RUN}-pr2")
-        );
+        assert!(backend_wt.starts_with(canonical(parent.join("backend-worktrees"))), "{}", backend_wt.display());
+        assert!(engine_wt.starts_with(canonical(parent.join("engine-worktrees"))), "{}", engine_wt.display());
+        assert_eq!(canonical(git(&backend_wt, &["rev-parse", "--git-common-dir"]).replace("/.git", "")), canonical(&backend));
+        assert_eq!(canonical(git(&engine_wt, &["rev-parse", "--git-common-dir"]).replace("/.git", "")), canonical(&engine));
+        assert_eq!(git(&engine_wt, &["branch", "--show-current"]), format!("{RUN}-pr2"));
 
         // What the actor opened, in order, and where: the Plan Reviewer in the
         // run's own folder, then each lane's stages in that lane's worktree.
-        let opened: Vec<(String, PathBuf)> = host
-            .launches
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|l| (l.role_id.clone(), canonical(&l.cwd)))
-            .collect();
+        let opened: Vec<(String, PathBuf)> =
+            host.launches.lock().unwrap().iter().map(|l| (l.role_id.clone(), canonical(&l.cwd))).collect();
         let home_dir = canonical(host.home.cwd.path());
         assert_eq!(
             opened,
@@ -2857,20 +2356,10 @@ mod run_actor {
             "{all}"
         );
         // The engine lane started from the backend's approval.
-        let approved_at = run
-            .events
-            .iter()
-            .position(|e| e.outcome.as_deref() == Some("laneDone"))
-            .expect("laneDone");
-        assert!(
-            run.events[approved_at].summary.contains("Starting pr2"),
-            "{all}"
-        );
+        let approved_at = run.events.iter().position(|e| e.outcome.as_deref() == Some("laneDone")).expect("laneDone");
+        assert!(run.events[approved_at].summary.contains("Starting pr2"), "{all}");
         // Each lane's check ran in its own worktree (the flaky check leaves its mark there), never at home.
-        assert!(
-            backend_wt.join(".check-failed-once").is_file()
-                && engine_wt.join(".check-failed-once").is_file()
-        );
+        assert!(backend_wt.join(".check-failed-once").is_file() && engine_wt.join(".check-failed-once").is_file());
         assert!(!home_dir.join(".check-failed-once").exists());
         let gates: Vec<&str> = run
             .events
@@ -2881,20 +2370,9 @@ mod run_actor {
         assert_eq!(gates, ["failed", "passed", "failed", "passed"], "{all}");
         // The engine lane's reviewer is told which repo its lane is in.
         let engine_review = host.launches.lock().unwrap()[3].prompt.clone();
-        assert!(
-            engine_review.contains("Implement only PR2 (Engine client) in the engine repo"),
-            "{engine_review}"
-        );
+        assert!(engine_review.contains("Implement only PR2 (Engine client) in the engine repo"), "{engine_review}");
         assert_eq!(run.status, RunStatus::Complete);
-        assert!(
-            host.stops
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|s| s.starts_with("Checkpoint")),
-            "{:?}",
-            host.stops.lock().unwrap()
-        );
+        assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
     }
 
     /// What Overview › Fan out does (`fanOut.ts`): one worktree per lane in
@@ -2912,75 +2390,35 @@ mod run_actor {
         let prefill = actors
             .ask(
                 RUN,
-                UserAction::Prefill {
-                    source_tab_id: reviewer,
-                    target_role_id: "role_implementer".into(),
-                },
+                UserAction::Prefill { source_tab_id: reviewer, target_role_id: "role_implementer".into() },
                 Duration::from_secs(30),
             )
             .expect("the hand-off form")
             .prefill
             .expect("prefilled");
-        let folder =
-            |name: &str| PathBuf::from(&repos.iter().find(|r| r.name == name).unwrap().folder);
-        let role = host
-            .roles
-            .iter()
-            .find(|r| r.id == "role_implementer")
-            .unwrap()
-            .clone();
+        let folder = |name: &str| PathBuf::from(&repos.iter().find(|r| r.name == name).unwrap().folder);
+        let role = host.roles.iter().find(|r| r.id == "role_implementer").unwrap().clone();
         let mut made = Vec::new();
         for (lane, repo) in [("pr1", "backend"), ("pr2", "engine")] {
-            let wt = dcterminal_lib::worktree::add_worktree(
-                &folder(repo),
-                &format!("{RUN}-{lane}"),
-                true,
-                None,
-            )
-            .expect("worktree");
+            let wt = dcterminal_lib::worktree::add_worktree(&folder(repo), &format!("{RUN}-{lane}"), true, None).expect("worktree");
             let mut store = host.store.lock().unwrap();
             let tab = store.create_worktree_tab(&role, wt.clone()).unwrap();
             let mut values = prefill.values.clone();
             values.insert("cwd".into(), wt.path.clone());
-            store
-                .data
-                .tabs
-                .iter_mut()
-                .find(|t| t.id == tab)
-                .unwrap()
-                .answers = values;
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = values;
             made.push((lane, repo, tab, PathBuf::from(&wt.path)));
         }
         {
             let mut store = host.store.lock().unwrap();
             let lanes = vec![
-                LaneInput {
-                    id: "pr1".into(),
-                    title: "PR1 — Session API".into(),
-                    depends_on: vec![],
-                    repo: Some("backend".into()),
-                },
-                LaneInput {
-                    id: "pr2".into(),
-                    title: "PR2 — Engine client".into(),
-                    depends_on: vec!["pr1".into()],
-                    repo: Some("engine".into()),
-                },
+                LaneInput { id: "pr1".into(), title: "PR1 — Session API".into(), depends_on: vec![], repo: Some("backend".into()) },
+                LaneInput { id: "pr2".into(), title: "PR2 — Engine client".into(), depends_on: vec!["pr1".into()], repo: Some("engine".into()) },
             ];
             fan_out(&mut store, RUN, "implementer", lanes).expect("fan out");
             for (lane, _, tab, _) in &made {
-                let chain = ChainRef {
-                    chain_id: RUN.into(),
-                    kind: "eagle1".into(),
-                    step: 3,
-                    total: 4,
-                    round: 1,
-                    lane: Some(lane.to_string()),
-                };
+                let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 3, total: 4, round: 1, lane: Some(lane.to_string()) };
                 // Joining a lane with the hand-off passes the checkpoint, as your Send does.
-                store
-                    .set_tab_chain(tab, Some(chain), Some(&prefill.handoff_text))
-                    .unwrap();
+                store.set_tab_chain(tab, Some(chain), Some(&prefill.handoff_text)).unwrap();
             }
             store.save().unwrap();
         }
@@ -2998,18 +2436,8 @@ mod run_actor {
         let session = "8c3f5d21-2b3c-4d4e-9f50-000000000101";
         {
             let mut store = host.store.lock().unwrap();
-            store
-                .set_tab_bridge(
-                    &tab,
-                    Some(BridgeTag {
-                        run_id: RUN.into(),
-                        stage: "implementer@pr1".into(),
-                    }),
-                )
-                .unwrap();
-            store
-                .remember_claude_terminal_session(&tab, session)
-                .unwrap();
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "implementer@pr1".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, session).unwrap();
             store.save().unwrap();
         }
         let run_dir = prepare_stage(&host.runs, &bridge, &tab).expect("prepare the backend lane");
@@ -3022,20 +2450,11 @@ mod run_actor {
                 cwd: wt.clone(),
                 prompt: "Implement PR1 in the backend worktree.".into(),
                 session_id: session.into(),
-                bridge: Some(launch_flags(
-                    ResultKind::Implementer,
-                    Path::new(DCTERMINAL),
-                    &run_dir,
-                    RUN,
-                    "implementer@pr1",
-                    &tab,
-                )),
+                bridge: Some(launch_flags(ResultKind::Implementer, Path::new(DCTERMINAL), &run_dir, RUN, "implementer@pr1", &tab)),
             },
             &implemented_in("pr1", "https://github.com/acme/backend/pull/1"),
             false,
         );
-        made.into_iter()
-            .map(|(lane, _, _, wt)| (lane.to_string(), wt))
-            .collect()
+        made.into_iter().map(|(lane, _, _, wt)| (lane.to_string(), wt)).collect()
     }
 }

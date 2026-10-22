@@ -1,9 +1,7 @@
 //! The user's own pipelines (`pipelines.json` in app data, ADR-014).
 //! Built-ins are bundled (`crate::pipelines`) and never written here.
 
-use crate::pipelines::{
-    parse_user_entry, set_user_pipelines, validate_user_pipelines, PipelineDef,
-};
+use crate::pipelines::{parse_user_entry, set_user_pipelines, validate_user_pipelines, PipelineDef};
 use crate::store::json_io::{read_json_or_recover, set_aside_other_version, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -21,9 +19,7 @@ pub struct PipelinesFile {
 
 /// Each entry on its own: one that is not a pipeline becomes a disabled
 /// placeholder holding the entry, so neither it nor the others are lost.
-fn lenient_pipelines<'de, D: serde::Deserializer<'de>>(
-    de: D,
-) -> Result<Vec<PipelineDef>, D::Error> {
+fn lenient_pipelines<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<PipelineDef>, D::Error> {
     let values = Vec::<serde_json::Value>::deserialize(de)?;
     Ok(values
         .into_iter()

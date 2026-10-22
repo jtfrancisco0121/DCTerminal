@@ -39,13 +39,7 @@ pub fn merge_template(
         }
         filled.insert(field.key.as_str(), raw);
     }
-    for key in [
-        "cwd",
-        "folderName",
-        "date",
-        "roleName",
-        RESULT_INSTRUCTIONS_KEY,
-    ] {
+    for key in ["cwd", "folderName", "date", "roleName", RESULT_INSTRUCTIONS_KEY] {
         if let Some(value) = values.get(key) {
             filled.entry(key).or_insert(value.as_str());
         }
@@ -124,3 +118,4 @@ fn fill_tokens(template: &str, filled: &HashMap<&str, &str>) -> (String, Vec<Str
     out.push_str(rest);
     (out, unresolved)
 }
+

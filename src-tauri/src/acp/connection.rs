@@ -694,11 +694,7 @@ mod turn_timeout_tests {
     #[test]
     fn a_busy_turn_outlives_the_limit() {
         let script = format!("for i in 1 2 3 4 5 6; do {UPDATE}; sleep 0.4; done\n{DONE}\nsleep 5");
-        let result = run_turn(
-            &script,
-            Duration::from_millis(1500),
-            &mut LineDispatch::new(),
-        );
+        let result = run_turn(&script, Duration::from_millis(1500), &mut LineDispatch::new());
         assert_eq!(result.unwrap()["stopReason"], "end_turn");
     }
 
@@ -715,23 +711,13 @@ mod turn_timeout_tests {
     #[test]
     fn a_silent_turn_still_times_out() {
         let script = format!("sleep 2\n{DONE}\nsleep 5");
-        let result = run_turn(
-            &script,
-            Duration::from_millis(400),
-            &mut LineDispatch::new(),
-        );
-        assert!(result
-            .unwrap_err()
-            .contains("timeout waiting for response id=7"));
+        let result = run_turn(&script, Duration::from_millis(400), &mut LineDispatch::new());
+        assert!(result.unwrap_err().contains("timeout waiting for response id=7"));
     }
 
     /// Runs a turn whose agent asks a permission with `ask_id` (raw JSON),
     /// then waits for an answer line carrying that same id before ending.
-    fn answered_turn(
-        ask_id: &str,
-        wait_for: &str,
-        answer_with: crate::acp::RequestId,
-    ) -> Result<serde_json::Value, String> {
+    fn answered_turn(ask_id: &str, wait_for: &str, answer_with: crate::acp::RequestId) -> Result<serde_json::Value, String> {
         use std::sync::{Arc, Mutex};
         let ask = format!(
             r#"echo '{{"jsonrpc":"2.0","id":{ask_id},"method":"session/request_permission","params":{{"sessionId":"s1","toolCall":{{}},"options":[]}}}}'"#
@@ -746,10 +732,10 @@ mod turn_timeout_tests {
             let outbox = Arc::clone(&outbox);
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(300));
-                outbox.lock().unwrap().push((
-                    answer_with,
-                    serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
-                ));
+                outbox
+                    .lock()
+                    .unwrap()
+                    .push((answer_with, serde_json::json!({ "outcome": { "outcome": "cancelled" } })));
             })
         };
         let cancel = AtomicBool::new(false);

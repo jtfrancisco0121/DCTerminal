@@ -74,10 +74,7 @@ fn tool_text(text: &str, is_error: bool) -> Value {
 
 /// One JSON-RPC message in, at most one reply out (notifications get none).
 pub fn handle(server: &Server, message: &Value) -> Option<Value> {
-    let method = message
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let method = message.get("method").and_then(Value::as_str).unwrap_or_default();
     let Some(id) = message.get("id").cloned() else {
         // A notification (`notifications/initialized`, `notifications/cancelled`).
         return None;
@@ -99,10 +96,7 @@ pub fn handle(server: &Server, message: &Value) -> Option<Value> {
             )
         }
         "ping" => ok(id, json!({})),
-        "tools/list" => ok(
-            id,
-            json!({ "tools": [schema::tool_definition(server.kind)] }),
-        ),
+        "tools/list" => ok(id, json!({ "tools": [schema::tool_definition(server.kind)] })),
         "tools/call" => ok(id, call(server, &params)),
         _ => error(id, -32601, &format!("method not found: {method}")),
     };
@@ -110,15 +104,9 @@ pub fn handle(server: &Server, message: &Value) -> Option<Value> {
 }
 
 fn call(server: &Server, params: &Value) -> Value {
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
     if name != TOOL_NAME {
-        return tool_text(
-            &format!("Unknown tool {name:?}; this server has only {TOOL_NAME}."),
-            true,
-        );
+        return tool_text(&format!("Unknown tool {name:?}; this server has only {TOOL_NAME}."), true);
     }
     let dir = match server.open() {
         Ok(dir) => dir,
@@ -129,10 +117,7 @@ fn call(server: &Server, params: &Value) -> Value {
             );
         }
         Err(OpenError::Invalid(why)) => {
-            return tool_text(
-                &format!("DCTerminal could not take this result: {why}."),
-                true,
-            );
+            return tool_text(&format!("DCTerminal could not take this result: {why}."), true);
         }
     };
     // No hook has started a turn yet (the startup prompt, if Claude Code
@@ -144,20 +129,12 @@ fn call(server: &Server, params: &Value) -> Value {
             let turn = super::folder::TurnState::new(&super::hook::tool_turn_id());
             if let Err(err) = dir.write_turn(&turn) {
                 dir.log(&format!("could not open a turn for a result: {err}"));
-                return tool_text(
-                    &format!(
-                        "DCTerminal could not file the result ({err}). Call submit_result again."
-                    ),
-                    true,
-                );
+                return tool_text(&format!("DCTerminal could not file the result ({err}). Call submit_result again."), true);
             }
             turn
         }
     };
-    let args = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
     match schema::validate(dir.info.result, &args) {
         Err(problems) => tool_text(&schema::rejected_message(&problems), true),
         Ok(result) => {

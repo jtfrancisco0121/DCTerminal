@@ -18,15 +18,9 @@ pub fn get_claude_usage(
         state.bind_window(window_id.as_deref());
         let account = state.account_for_window(state.focus_window());
         let settings = settings.lock().map_err(|e| e.to_string())?;
-        crate::store::settings_store::resolved_account_config(
-            &settings.providers().claude,
-            &account,
-        )
+        crate::store::settings_store::resolved_account_config(&settings.providers().claude, &account)
     };
-    let files = usage
-        .lock()
-        .map_err(|e| e.to_string())?
-        .status_line_files(&dir.path);
+    let files = usage.lock().map_err(|e| e.to_string())?.status_line_files(&dir.path);
     // Read without the lock: each file is a tab's last status line reading.
     let readings: Vec<_> = files
         .iter()

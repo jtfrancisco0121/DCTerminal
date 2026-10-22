@@ -34,10 +34,7 @@ fn built_ins_match_the_stages_runs_have_always_used() {
     // An unknown run kind is an error, never a silent Eagle-Eye 1 (Track H4).
     assert_eq!(stages("mystery"), None);
     assert_eq!(chain_kind_for_run("mystery"), None);
-    assert_eq!(
-        find_enabled("mystery").unwrap_err(),
-        "unknown pipeline: mystery"
-    );
+    assert_eq!(find_enabled("mystery").unwrap_err(), "unknown pipeline: mystery");
     assert!(builtins().iter().all(|def| def.built_in));
 }
 
@@ -46,18 +43,11 @@ fn built_in_loop_backs_have_no_round_cap_and_keep_their_gates() {
     let eagle1 = find("eagle1").unwrap();
     let review = eagle1.stage("pr_reviewer").unwrap();
     let back = review.loop_back.as_ref().unwrap();
-    assert_eq!(
-        (back.to.as_str(), back.max_rounds, back.min_severity),
-        ("implementer", None, Severity::Medium)
-    );
+    assert_eq!((back.to.as_str(), back.max_rounds, back.min_severity), ("implementer", None, Severity::Medium));
     // Every built-in loop-back goes on until its reviewer approves.
     let caps: Vec<Option<u32>> = builtins()
         .iter()
-        .flat_map(|def| {
-            def.stages
-                .iter()
-                .filter_map(|stage| stage.loop_back.as_ref())
-        })
+        .flat_map(|def| def.stages.iter().filter_map(|stage| stage.loop_back.as_ref()))
         .map(|back| back.max_rounds)
         .collect();
     assert_eq!(caps, vec![None, None, None]);
@@ -66,11 +56,7 @@ fn built_in_loop_backs_have_no_round_cap_and_keep_their_gates() {
     assert_eq!(
         implementer.gates,
         vec![
-            GateDef::Command {
-                run: "auto".into(),
-                timeout_secs: None,
-                optional: false
-            },
+            GateDef::Command { run: "auto".into(), timeout_secs: None, optional: false },
             GateDef::PullRequest
         ]
     );
@@ -118,11 +104,7 @@ fn validation_names_the_problem() {
     empty.stages.clear();
     assert!(err(empty).contains("1 to"));
     let mut gate = user_def("gate");
-    gate.stages[0].gates = vec![GateDef::Command {
-        run: " ".into(),
-        timeout_secs: None,
-        optional: false,
-    }];
+    gate.stages[0].gates = vec![GateDef::Command { run: " ".into(), timeout_secs: None, optional: false }];
     assert!(err(gate).contains("command gate"));
     let twice = validate_user_pipelines(&[user_def("dup"), user_def("dup")]).unwrap_err();
     assert!(twice.contains("two pipelines"));
@@ -143,45 +125,30 @@ fn parallel_reviewers_need_a_loop_back_and_distinct_roles() {
     let mut def = user_def("pair");
     def.stages[1].also_reviewers = vec!["role_security".into()];
     assert_eq!(validate_user_pipelines(&[def.clone()]), Ok(()));
-    assert_eq!(
-        def.stages[1].roles(),
-        vec!["role_pr_reviewer", "role_security"]
-    );
+    assert_eq!(def.stages[1].roles(), vec!["role_pr_reviewer", "role_security"]);
     let mut twice = def.clone();
     twice.stages[1].also_reviewers = vec!["role_pr_reviewer".into()];
-    assert!(validate_user_pipelines(&[twice])
-        .unwrap_err()
-        .contains("twice"));
+    assert!(validate_user_pipelines(&[twice]).unwrap_err().contains("twice"));
     let mut no_loop = def.clone();
     no_loop.stages[0].also_reviewers = vec!["role_docs".into()];
-    assert!(validate_user_pipelines(&[no_loop])
-        .unwrap_err()
-        .contains("loopBack"));
+    assert!(validate_user_pipelines(&[no_loop]).unwrap_err().contains("loopBack"));
 }
 
 #[test]
 fn a_role_used_in_two_stages_is_rejected() {
     let mut def = user_def("dup");
     def.stages[1].role_id = "role_implementer".into();
-    assert!(validate_user_pipelines(&[def])
-        .unwrap_err()
-        .contains("two stages"));
+    assert!(validate_user_pipelines(&[def]).unwrap_err().contains("two stages"));
     // Also when the second use is a parallel reviewer.
     let mut also = user_def("dup_also");
     also.stages[1].also_reviewers = vec!["role_implementer".into()];
-    assert!(validate_user_pipelines(&[also])
-        .unwrap_err()
-        .contains("two stages"));
+    assert!(validate_user_pipelines(&[also]).unwrap_err().contains("two stages"));
 }
 
 #[test]
 fn stall_minutes_default_to_30_and_are_set_per_pipeline() {
     assert_eq!(find("eagle1").unwrap().autopilot.stall_minutes, 30);
-    assert_eq!(
-        user_def("quiet").autopilot.stall_minutes,
-        30,
-        "left out of the file"
-    );
+    assert_eq!(user_def("quiet").autopilot.stall_minutes, 30, "left out of the file");
     let mut slow: PipelineDef = serde_json::from_value(serde_json::json!({
         "id": "slow_suite",
         "name": "Slow suite",
@@ -190,23 +157,13 @@ fn stall_minutes_default_to_30_and_are_set_per_pipeline() {
     }))
     .unwrap();
     assert_eq!(slow.autopilot.stall_minutes, 90);
-    assert_eq!(
-        slow.autopilot.pause_at_usage_percent, 90,
-        "the other policy keeps its default"
-    );
-    assert_eq!(
-        recovery::stall_limit(&slow),
-        std::time::Duration::from_secs(90 * 60)
-    );
+    assert_eq!(slow.autopilot.pause_at_usage_percent, 90, "the other policy keeps its default");
+    assert_eq!(recovery::stall_limit(&slow), std::time::Duration::from_secs(90 * 60));
     assert_eq!(validate_user_pipelines(&[slow.clone()]), Ok(()));
     slow.autopilot.stall_minutes = 0;
-    assert!(validate_user_pipelines(&[slow.clone()])
-        .unwrap_err()
-        .contains("stallMinutes is 1 to 1440"));
+    assert!(validate_user_pipelines(&[slow.clone()]).unwrap_err().contains("stallMinutes is 1 to 1440"));
     slow.autopilot.stall_minutes = 1441;
-    assert!(validate_user_pipelines(&[slow])
-        .unwrap_err()
-        .contains("stallMinutes"));
+    assert!(validate_user_pipelines(&[slow]).unwrap_err().contains("stallMinutes"));
 }
 
 #[test]
@@ -221,10 +178,7 @@ fn a_loaded_stall_minutes_out_of_range_uses_the_default_limit() {
     }
     for good in [1, MAX_STALL_MINUTES] {
         def.autopilot.stall_minutes = good;
-        assert_eq!(
-            recovery::stall_limit(&def),
-            std::time::Duration::from_secs(u64::from(good) * 60)
-        );
+        assert_eq!(recovery::stall_limit(&def), std::time::Duration::from_secs(u64::from(good) * 60));
     }
 }
 
@@ -233,10 +187,7 @@ fn stage_kinds_default_from_the_built_in_role_then_the_loop_back() {
     // The built-ins say their kinds; left out, the role id gives the same.
     for def in builtins() {
         for stage in &def.stages {
-            let unset = StageDef {
-                kind: None,
-                ..stage.clone()
-            };
+            let unset = StageDef { kind: None, ..stage.clone() };
             assert_eq!(stage.kind, Some(unset.kind()), "{} {}", def.id, stage.id);
         }
     }
@@ -244,12 +195,7 @@ fn stage_kinds_default_from_the_built_in_role_then_the_loop_back() {
     let kinds: Vec<StageKind> = eagle1.stages.iter().map(StageDef::kind).collect();
     assert_eq!(
         kinds,
-        [
-            StageKind::Planner,
-            StageKind::Reviewer,
-            StageKind::Implementer,
-            StageKind::Reviewer
-        ]
+        [StageKind::Planner, StageKind::Reviewer, StageKind::Implementer, StageKind::Reviewer]
     );
     let mut def = user_def("kinds");
     // A copy has its own id: a stage that loops back reviews, any other is generic.
@@ -275,32 +221,22 @@ fn role_ids_must_exist() {
     let roles: HashSet<String> = ["role_implementer", "role_pr_reviewer", "role_security"]
         .map(String::from)
         .into();
-    assert_eq!(
-        validate_user_pipelines_with(&[user_def("ok")], Some(&roles)),
-        Ok(())
-    );
+    assert_eq!(validate_user_pipelines_with(&[user_def("ok")], Some(&roles)), Ok(()));
     let mut gone = user_def("gone");
     gone.stages[1].role_id = "role_custom_9".into();
     let err = validate_user_pipelines_with(&[gone.clone()], Some(&roles)).unwrap_err();
-    assert!(
-        err.contains("\"role_custom_9\", which does not exist"),
-        "{err}"
-    );
+    assert!(err.contains("\"role_custom_9\", which does not exist"), "{err}");
     // Parallel reviewers too.
     let mut also = user_def("also");
     also.stages[1].also_reviewers = vec!["role_docs".into()];
-    assert!(validate_user_pipelines_with(&[also], Some(&roles))
-        .unwrap_err()
-        .contains("role_docs"));
+    assert!(validate_user_pipelines_with(&[also], Some(&roles)).unwrap_err().contains("role_docs"));
     // Before the roles are known, ids are not checked.
     assert_eq!(validate_user_pipelines_with(&[gone], None), Ok(()));
 }
 
 #[test]
 fn an_invalid_pipeline_is_kept_disabled_with_the_reason() {
-    let roles: HashSet<String> = ["role_implementer", "role_pr_reviewer"]
-        .map(String::from)
-        .into();
+    let roles: HashSet<String> = ["role_implementer", "role_pr_reviewer"].map(String::from).into();
     let mut gone = user_def("gone");
     gone.stages[1].role_id = "role_custom_9".into();
     let broken = parse_user_entry(
@@ -312,43 +248,21 @@ fn an_invalid_pipeline_is_kept_disabled_with_the_reason() {
         Some(&roles),
     );
     let ids: Vec<&str> = checked.iter().map(|def| def.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        ["fine", "gone", "broken", "fine"],
-        "nothing is dropped"
-    );
+    assert_eq!(ids, ["fine", "gone", "broken", "fine"], "nothing is dropped");
     assert_eq!(checked[0].disabled, None);
-    assert!(checked[1]
-        .disabled
-        .as_deref()
-        .unwrap()
-        .contains("role_custom_9"));
+    assert!(checked[1].disabled.as_deref().unwrap().contains("role_custom_9"));
     let unreadable = &checked[2];
     assert_eq!(unreadable.name, "Broken");
-    assert!(unreadable
-        .disabled
-        .as_deref()
-        .unwrap()
-        .starts_with("It could not be read"));
-    assert_eq!(
-        unreadable.raw.as_ref().unwrap()["stages"],
-        "not a list",
-        "the entry is kept as written"
-    );
-    assert_eq!(
-        checked[3].disabled.as_deref(),
-        Some("two pipelines use this id.")
-    );
+    assert!(unreadable.disabled.as_deref().unwrap().starts_with("It could not be read"));
+    assert_eq!(unreadable.raw.as_ref().unwrap()["stages"], "not a list", "the entry is kept as written");
+    assert_eq!(checked[3].disabled.as_deref(), Some("two pipelines use this id."));
     // A role that comes back enables the pipeline again.
     let roles_back: HashSet<String> = ["role_implementer", "role_pr_reviewer", "role_custom_9"]
         .map(String::from)
         .into();
     let again = checked_user_pipelines(checked, Some(&roles_back));
     assert_eq!(again[1].disabled, None);
-    assert!(
-        again[2].disabled.is_some(),
-        "an unreadable entry stays disabled"
-    );
+    assert!(again[2].disabled.is_some(), "an unreadable entry stays disabled");
 }
 
 // Rust reads "reviewer" from the loop-back, TS from the kind: a kind written
@@ -356,26 +270,16 @@ fn an_invalid_pipeline_is_kept_disabled_with_the_reason() {
 #[test]
 fn a_kind_that_contradicts_the_loop_back_is_refused_and_kept_as_written() {
     let err = |def: PipelineDef| validate_user_pipelines_with(&[def], None).unwrap_err();
-    for kind in [
-        StageKind::Planner,
-        StageKind::Implementer,
-        StageKind::Generic,
-    ] {
+    for kind in [StageKind::Planner, StageKind::Implementer, StageKind::Generic] {
         let mut looped = user_def("looped");
         looped.stages[1].kind = Some(kind);
         let msg = err(looped);
-        assert!(
-            msg.contains("stage \"review\"") && msg.contains("loopBack"),
-            "{kind:?}: {msg}"
-        );
+        assert!(msg.contains("stage \"review\"") && msg.contains("loopBack"), "{kind:?}: {msg}");
     }
     let mut lone = user_def("lone");
     lone.stages[0].kind = Some(StageKind::Reviewer);
     let msg = err(lone);
-    assert!(
-        msg.contains("stage \"fix\"") && msg.contains("loopBack"),
-        "{msg}"
-    );
+    assert!(msg.contains("stage \"fix\"") && msg.contains("loopBack"), "{msg}");
     // Written as the defaults would read it: fine.
     let mut said = user_def("said");
     said.stages[0].kind = Some(StageKind::Implementer);
@@ -399,32 +303,14 @@ fn a_disabled_pipeline_cannot_drive_a_run() {
     assert!(find(id).is_some(), "still listed");
     let err = find_enabled(id).unwrap_err();
     unregister_for_test(id);
-    assert!(
-        err.contains("is disabled") && err.contains("role_x"),
-        "{err}"
-    );
+    assert!(err.contains("is disabled") && err.contains("role_x"), "{err}");
 }
 
 #[test]
 fn an_optional_gate_round_trips_and_defaults_off() {
-    let gate: GateDef =
-        serde_json::from_value(serde_json::json!({ "kind": "command", "run": "auto" })).unwrap();
-    assert_eq!(
-        gate,
-        GateDef::Command {
-            run: "auto".into(),
-            timeout_secs: None,
-            optional: false
-        }
-    );
-    let optional = GateDef::Command {
-        run: "auto".into(),
-        timeout_secs: None,
-        optional: true,
-    };
+    let gate: GateDef = serde_json::from_value(serde_json::json!({ "kind": "command", "run": "auto" })).unwrap();
+    assert_eq!(gate, GateDef::Command { run: "auto".into(), timeout_secs: None, optional: false });
+    let optional = GateDef::Command { run: "auto".into(), timeout_secs: None, optional: true };
     let json = serde_json::to_value(&optional).unwrap();
-    assert_eq!(
-        json,
-        serde_json::json!({ "kind": "command", "run": "auto", "optional": true })
-    );
+    assert_eq!(json, serde_json::json!({ "kind": "command", "run": "auto", "optional": true }));
 }

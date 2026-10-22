@@ -76,11 +76,7 @@ pub(crate) fn validate_handoff_input(input: &HandoffSaveInput) -> Result<(), Str
     }
     check_len("title", &input.title, MAX_TEXT_CHARS)?;
     check_len("source label", &input.source_label, MAX_TEXT_CHARS)?;
-    check_len(
-        "warning",
-        input.warning.as_deref().unwrap_or(""),
-        MAX_TEXT_CHARS,
-    )?;
+    check_len("warning", input.warning.as_deref().unwrap_or(""), MAX_TEXT_CHARS)?;
     check_len("scope", &input.scope, MAX_ID_CHARS)?;
     check_len("folder", &input.cwd, MAX_CWD_CHARS)?;
     if let Some(field) = input.plan_field.as_deref() {
@@ -121,23 +117,20 @@ pub fn handoff_save(
             .collect()
     };
     let mut store = store.lock().map_err(|e| e.to_string())?;
-    let record = store.insert_keeping(
-        NewHandoff {
-            source_tab_id: input.source_tab_id,
-            source_role_id: input.source_role_id,
-            source_label: input.source_label,
-            target_role_id: input.target_role_id,
-            title: input.title,
-            cwd: input.cwd,
-            scope: input.scope,
-            plan_text: input.plan_text,
-            truncated: input.truncated,
-            warning: input.warning,
-            plan_field: input.plan_field,
-            chain: input.chain,
-        },
-        &live_tabs,
-    )?;
+    let record = store.insert_keeping(NewHandoff {
+        source_tab_id: input.source_tab_id,
+        source_role_id: input.source_role_id,
+        source_label: input.source_label,
+        target_role_id: input.target_role_id,
+        title: input.title,
+        cwd: input.cwd,
+        scope: input.scope,
+        plan_text: input.plan_text,
+        truncated: input.truncated,
+        warning: input.warning,
+        plan_field: input.plan_field,
+        chain: input.chain,
+    }, &live_tabs)?;
     notify_chain(&app, record.chain.as_ref());
     Ok(record)
 }
@@ -202,11 +195,7 @@ pub fn attach_handoff(
     handoffs: &Mutex<HandoffStore>,
     input: HandoffAttachInput,
 ) -> Result<HandoffAttached, String> {
-    if !handoffs
-        .lock()
-        .map_err(|e| e.to_string())?
-        .contains(&input.id)
-    {
+    if !handoffs.lock().map_err(|e| e.to_string())?.contains(&input.id) {
         return Err(format!("unknown hand-off: {}", input.id));
     }
     let text = input.handoff_text.as_deref();
@@ -342,13 +331,7 @@ mod tests {
             }
         }
 
-        fn stores(
-            name: &str,
-        ) -> (
-            crate::test_support::TempDir,
-            Mutex<StateStore>,
-            Mutex<HandoffStore>,
-        ) {
+        fn stores(name: &str) -> (crate::test_support::TempDir, Mutex<StateStore>, Mutex<HandoffStore>) {
             let dir = crate::test_support::TempDir::new(name);
             let state = StateStore {
                 path: dir.path().join("state.json"),
@@ -391,9 +374,7 @@ mod tests {
             let events = Recorded::default();
             let (planner, reviewer) = {
                 let mut s = state.lock().unwrap();
-                let planner = s
-                    .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
-                    .unwrap();
+                let planner = s.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
                 s.set_tab_chain(&planner, Some(chain(1)), None).unwrap();
                 let reviewer = s
                     .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
@@ -414,16 +395,10 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(
-                attached.record.target_tab_id.as_deref(),
-                Some(reviewer.as_str())
-            );
+            assert_eq!(attached.record.target_tab_id.as_deref(), Some(reviewer.as_str()));
             assert_eq!(attached.chain.unwrap().step, 2);
             let s = state.lock().unwrap();
-            assert_eq!(
-                s.tab_by_id(&reviewer).unwrap().chain.as_ref().unwrap().step,
-                2
-            );
+            assert_eq!(s.tab_by_id(&reviewer).unwrap().chain.as_ref().unwrap().step, 2);
             let run = s.pipeline_run_by_id("ee_1").unwrap();
             assert_eq!(run.tab_ids.get("role_plan_reviewer"), Some(&reviewer));
             assert_eq!(run.handoffs["role_plan_reviewer"].text, "# Plan");
@@ -465,17 +440,13 @@ mod tests {
             let events = Recorded::default();
             let (planner, reviewer, again) = {
                 let mut s = state.lock().unwrap();
-                let planner = s
-                    .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
-                    .unwrap();
+                let planner = s.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
                 s.set_tab_chain(&planner, Some(chain(1)), None).unwrap();
                 let reviewer = s
                     .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
                     .unwrap();
                 s.set_tab_chain(&reviewer, Some(chain(2)), None).unwrap();
-                let again = s
-                    .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
-                    .unwrap();
+                let again = s.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
                 (planner, reviewer, again)
             };
             let _ = planner;
@@ -503,10 +474,7 @@ mod tests {
             let s = state.lock().unwrap();
             let run = s.pipeline_run_by_id("ee_1").unwrap();
             assert_eq!(run.round, 2);
-            assert_eq!(
-                run.verdicts[0].verdict.as_deref(),
-                Some("REQUIRES REVISION")
-            );
+            assert_eq!(run.verdicts[0].verdict.as_deref(), Some("REQUIRES REVISION"));
         }
     }
 
@@ -534,36 +502,21 @@ mod tests {
             (|i| i.source_role_id = "x".repeat(200), "source role id"),
             (|i| i.source_tab_id = "tab/../../x".into(), "source tab id"),
             (|i| i.title = "t".repeat(5_000), "title is too long"),
-            (
-                |i| i.source_label = "l".repeat(5_000),
-                "source label is too long",
-            ),
+            (|i| i.source_label = "l".repeat(5_000), "source label is too long"),
             (|i| i.cwd = "c".repeat(10_000), "folder is too long"),
             (|i| i.scope = "s".repeat(500), "scope is too long"),
-            (
-                |i| i.warning = Some("w".repeat(5_000)),
-                "warning is too long",
-            ),
+            (|i| i.warning = Some("w".repeat(5_000)), "warning is too long"),
             (|i| i.plan_field = Some("plan field!".into()), "plan field"),
-            (
-                |i| i.chain.as_mut().unwrap().kind = "eagle9".into(),
-                "chain is not valid",
-            ),
+            (|i| i.chain.as_mut().unwrap().kind = "eagle9".into(), "chain is not valid"),
             (|i| i.chain.as_mut().unwrap().step = 0, "chain is not valid"),
             (|i| i.chain.as_mut().unwrap().step = 5, "chain is not valid"),
-            (
-                |i| i.chain.as_mut().unwrap().chain_id = "ee 1".into(),
-                "chain is not valid",
-            ),
+            (|i| i.chain.as_mut().unwrap().chain_id = "ee 1".into(), "chain is not valid"),
         ];
         for (break_it, reason) in cases {
             let mut bad = input();
             break_it(&mut bad);
             let err = validate_handoff_input(&bad).unwrap_err();
-            assert!(
-                err.to_lowercase().contains(reason),
-                "{reason:?} not in {err:?}"
-            );
+            assert!(err.to_lowercase().contains(reason), "{reason:?} not in {err:?}");
         }
     }
 }

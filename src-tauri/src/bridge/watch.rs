@@ -30,10 +30,7 @@ pub enum InboxEvent {
 
 /// `<stamp>-<kind>-<turn>.json`: the stamp has no `-`, a turn id may.
 fn parse_event(name: &str, text: &str) -> Option<InboxEvent> {
-    if name
-        .split_once('-')
-        .is_some_and(|(_, rest)| rest.starts_with("needs-"))
-    {
+    if name.split_once('-').is_some_and(|(_, rest)| rest.starts_with("needs-")) {
         serde_json::from_str(text).ok().map(InboxEvent::Needs)
     } else {
         serde_json::from_str(text).ok().map(InboxEvent::Turn)
@@ -53,10 +50,7 @@ fn inbox_files(runs_root: &Path) -> Vec<PathBuf> {
         .filter_map(|run| std::fs::read_dir(run.path().join(INBOX_DIR)).ok())
         .flat_map(|entries| entries.flatten().map(|entry| entry.path()))
         .filter(|path| {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
             !name.starts_with('.') && name.ends_with(".json")
         })
         .collect();
@@ -69,11 +63,7 @@ fn inbox_files(runs_root: &Path) -> Vec<PathBuf> {
 pub fn drain_inbox(runs_root: &Path, emit: &mut dyn FnMut(InboxEvent)) -> usize {
     let mut count = 0;
     for path in inbox_files(runs_root) {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
         let event = std::fs::read_to_string(&path)
             .ok()
             .and_then(|text| parse_event(&name, &text));
@@ -99,16 +89,11 @@ pub fn clear_inbox(runs_root: &Path) -> usize {
 pub fn spawn(runs_root: PathBuf, mut deliver: impl FnMut(InboxEvent) + Send + 'static) {
     std::thread::spawn(move || {
         if let Err(err) = std::fs::create_dir_all(&runs_root) {
-            eprintln!(
-                "DCTerminal: run folder {} unavailable: {err}",
-                runs_root.display()
-            );
+            eprintln!("DCTerminal: run folder {} unavailable: {err}", runs_root.display());
         }
         let stale = clear_inbox(&runs_root);
         if stale > 0 {
-            eprintln!(
-                "DCTerminal: left {stale} turn(s) that ended while the app was closed for Continue"
-            );
+            eprintln!("DCTerminal: left {stale} turn(s) that ended while the app was closed for Continue");
         }
         let (wake, wakes) = channel::<()>();
         let _watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
@@ -118,22 +103,16 @@ pub fn spawn(runs_root: PathBuf, mut deliver: impl FnMut(InboxEvent) + Send + 's
             if matches!(event.kind, EventKind::Access(_)) {
                 return;
             }
-            let in_inbox = event.paths.iter().any(|p| {
-                p.parent()
-                    .and_then(Path::file_name)
-                    .is_some_and(|n| n == INBOX_DIR)
-            });
+            let in_inbox = event
+                .paths
+                .iter()
+                .any(|p| p.parent().and_then(Path::file_name).is_some_and(|n| n == INBOX_DIR));
             if in_inbox {
                 let _ = wake.send(());
             }
         })
         .ok()
-        .and_then(|mut watcher| {
-            watcher
-                .watch(&runs_root, RecursiveMode::Recursive)
-                .ok()
-                .map(|_| watcher)
-        });
+        .and_then(|mut watcher| watcher.watch(&runs_root, RecursiveMode::Recursive).ok().map(|_| watcher));
         loop {
             drain_inbox(&runs_root, &mut deliver);
             match wakes.recv_timeout(SAFETY_POLL) {

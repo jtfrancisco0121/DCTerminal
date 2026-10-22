@@ -200,8 +200,7 @@ mod tests {
             mime: "image/png".into(),
             data_base64: "iVBORw0K".into(),
         };
-        let params =
-            session_prompt_params("sess", "what is wrong here?", std::slice::from_ref(&image));
+        let params = session_prompt_params("sess", "what is wrong here?", std::slice::from_ref(&image));
         assert_eq!(
             params,
             serde_json::json!({

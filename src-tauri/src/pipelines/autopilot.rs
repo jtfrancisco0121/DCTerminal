@@ -12,9 +12,7 @@
 //! loop-back and kind, never a role id, so a copied role decides the same.
 
 use super::{PipelineDef, Severity, StageDef};
-use crate::store::{
-    claim_key, PipelineRun, RunAutopilot, RunStatus, StopReason, MAX_DECIDED_TURNS,
-};
+use crate::store::{claim_key, PipelineRun, RunAutopilot, RunStatus, StopReason, MAX_DECIDED_TURNS};
 use serde::{Deserialize, Serialize};
 
 /// Failed-gate retries per stage and round before autopilot stops.
@@ -136,10 +134,7 @@ impl Decision {
 }
 
 fn needs_revision(verdict: &str) -> bool {
-    matches!(
-        verdict,
-        "REQUIRES REVISION" | "REQUEST CHANGES" | "REJECTED" | "CHANGES REQUIRED"
-    )
+    matches!(verdict, "REQUIRES REVISION" | "REQUEST CHANGES" | "REJECTED" | "CHANGES REQUIRED")
 }
 
 /// The bridge's verdict words (`APPROVED_WITH_CHANGES`, `CHANGES_REQUIRED`)
@@ -152,12 +147,7 @@ fn autopilot(run: &mut PipelineRun) -> &mut RunAutopilot {
     run.autopilot.get_or_insert_with(RunAutopilot::default)
 }
 
-fn stop(
-    run: &mut PipelineRun,
-    stage: Option<&StageDef>,
-    code: StopReason,
-    reason: String,
-) -> Decision {
+fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, code: StopReason, reason: String) -> Decision {
     run.stop_for(
         code,
         stage.map(|s| s.id.as_str()),
@@ -183,12 +173,7 @@ pub fn stop_for_pipeline(run: &mut PipelineRun, why: String) -> Decision {
     if run.status == RunStatus::Complete {
         return Decision::new("ignore", "The run is complete.");
     }
-    stop(
-        run,
-        None,
-        StopReason::CarryOutFailed,
-        format!("Autopilot stopped: {why}"),
-    )
+    stop(run, None, StopReason::CarryOutFailed, format!("Autopilot stopped: {why}"))
 }
 
 fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Decision {
@@ -197,16 +182,11 @@ fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Deci
     } else {
         run.set_running();
     }
-    let kind = if decision.action == "complete" {
-        "complete"
-    } else {
-        "autopilot"
-    };
+    let kind = if decision.action == "complete" { "complete" } else { "autopilot" };
     let (lane_id, summary) = match decision.lane.as_deref().and_then(|id| run.lane(id)) {
-        Some(lane) if decision.action != "laneDone" && decision.action != "complete" => (
-            Some(lane.id.clone()),
-            format!("{}: {}", lane.title, decision.reason),
-        ),
+        Some(lane) if decision.action != "laneDone" && decision.action != "complete" => {
+            (Some(lane.id.clone()), format!("{}: {}", lane.title, decision.reason))
+        }
         _ => (None, decision.reason.clone()),
     };
     run.log_in_lane(
@@ -255,11 +235,7 @@ fn claim(
     let key = claim_key(kind, &stage.id, run.round_for(lane), lane);
     if let Some(made) = run.claim_for(&key, turn) {
         let who = if made.by == "you" { "you" } else { "autopilot" };
-        let what = if kind == "back" {
-            "sent back"
-        } else {
-            "handed on"
-        };
+        let what = if kind == "back" { "sent back" } else { "handed on" };
         let reason = format!("{} finished: already {what} by {who}.", stage.title);
         return Err(Box::new(skip(run, stage, lane, reason)));
     }
@@ -290,18 +266,12 @@ fn advance(
     let Some(next) = def.stages.get(index + 1) else {
         if let Some(lane_id) = lane.filter(|id| run.lane(id).is_some()) {
             // One pull request is done; the run is done when every one is.
-            let title = run
-                .lane(lane_id)
-                .map(|l| l.title.clone())
-                .unwrap_or_default();
+            let title = run.lane(lane_id).map(|l| l.title.clone()).unwrap_or_default();
             if let Some(l) = run.lane_mut(lane_id) {
                 l.status = "approved".to_string();
             }
             if run.lanes.iter().all(|l| l.status == "approved") {
-                let mut done = Decision::new(
-                    "complete",
-                    format!("{why}: every pull request is approved; the run is complete."),
-                );
+                let mut done = Decision::new("complete", format!("{why}: every pull request is approved; the run is complete."));
                 done.follow_ups = follow_ups;
                 done.lane = Some(lane_id.to_string());
                 return go(run, done, detail);
@@ -310,10 +280,7 @@ fn advance(
             let reason = if unblocked.is_empty() {
                 format!("{why}: {title} is approved. Waiting on the other pull requests.")
             } else {
-                format!(
-                    "{why}: {title} is approved. Starting {}.",
-                    unblocked.join(", ")
-                )
+                format!("{why}: {title} is approved. Starting {}.", unblocked.join(", "))
             };
             let mut done = Decision::new("laneDone", reason);
             done.follow_ups = follow_ups;
@@ -340,8 +307,7 @@ fn advance(
         Ok(key) => key,
         Err(skipped) => return *skipped,
     };
-    let mut decision =
-        Decision::new("advance", format!("{why}: on to {}.", next.title)).for_stage(next);
+    let mut decision = Decision::new("advance", format!("{why}: on to {}.", next.title)).for_stage(next);
     decision.follow_ups = follow_ups;
     decision.lane = lane.map(str::to_string);
     decision.claim = Some(key);
@@ -370,27 +336,17 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         );
     };
     let stage = def.stages[index].clone();
-    if let Some(lane) = report
-        .lane
-        .as_deref()
-        .and_then(|id| run.lane(id))
-        .filter(|l| l.status == "approved")
-    {
+    if let Some(lane) = report.lane.as_deref().and_then(|id| run.lane(id)).filter(|l| l.status == "approved") {
         // Approved already (by hand, or a late turn): nothing to rework, and
         // nothing to wait for, so no stop is recorded or shown.
-        let mut decision =
-            Decision::new("ignore", "That pull request is already approved.").for_stage(&stage);
+        let mut decision = Decision::new("ignore", "That pull request is already approved.").for_stage(&stage);
         decision.lane = Some(lane.id.clone());
         return decision;
     }
     let lane = report.lane.as_deref().filter(|id| run.lane(id).is_some());
     let key_of_stage = stage_key(&stage.id, lane);
     let round = run.round_for(lane);
-    let turn = report
-        .turn
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty());
+    let turn = report.turn.as_deref().map(str::trim).filter(|t| !t.is_empty());
     if let Some(turn) = turn {
         // A reply is acted on once, even when it is read again.
         let decided = &mut autopilot(run).decided;
@@ -416,10 +372,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             run,
             &stage,
             lane,
-            format!(
-                "{} finished while the run is waiting for you{why}. Hand it on yourself.",
-                stage.title
-            ),
+            format!("{} finished while the run is waiting for you{why}. Hand it on yourself.", stage.title),
         );
     }
     if let Some(read_in) = report.round.filter(|read_in| *read_in != round) {
@@ -434,12 +387,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             ),
         );
     }
-    if let Some(error) = report
-        .rate_limit
-        .as_deref()
-        .map(str::trim)
-        .filter(|e| !e.is_empty())
-    {
+    if let Some(error) = report.rate_limit.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
         return stop(
             run,
             Some(&stage),
@@ -471,12 +419,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             ),
         );
     }
-    if let Some(why) = report
-        .blocked
-        .as_deref()
-        .map(str::trim)
-        .filter(|why| !why.is_empty())
-    {
+    if let Some(why) = report.blocked.as_deref().map(str::trim).filter(|why| !why.is_empty()) {
         // An Implementer that could not finish waits for you, with its reason.
         return stop(
             run,
@@ -489,13 +432,8 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             ),
         );
     }
-    let this_round = run
-        .gates
-        .get(&key_of_stage)
-        .filter(|gates| gates.round == round);
-    if let Some(gate) =
-        this_round.and_then(|gates| gates.results.iter().find(|r| r.no_check_found()).cloned())
-    {
+    let this_round = run.gates.get(&key_of_stage).filter(|gates| gates.round == round);
+    if let Some(gate) = this_round.and_then(|gates| gates.results.iter().find(|r| r.no_check_found()).cloned()) {
         // D31: an `auto` check that found nothing to run is not a pass.
         // A built-in pipeline cannot be edited, so say what you can do.
         let fix = if def.built_in {
@@ -522,23 +460,13 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 run,
                 Some(&stage),
                 StopReason::GateFailed,
-                format!(
-                    "The {} check failed {} times in a row. {}",
-                    gate.label,
-                    retries + 1,
-                    gate.summary
-                ),
+                format!("The {} check failed {} times in a row. {}", gate.label, retries + 1, gate.summary),
             );
         }
-        autopilot(run)
-            .gate_retries
-            .insert(key_of_stage.clone(), retries + 1);
+        autopilot(run).gate_retries.insert(key_of_stage.clone(), retries + 1);
         let mut decision = Decision::new(
             "retry",
-            format!(
-                "The {} check failed; sent the output back to {}.",
-                gate.label, stage.title
-            ),
+            format!("The {} check failed; sent the output back to {}.", gate.label, stage.title),
         )
         .for_stage(&stage);
         decision.lane = lane.map(str::to_string);
@@ -558,23 +486,9 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     let verdict = report.verdict.as_deref().map(normalize_verdict);
     let Some(verdict) = verdict.as_deref().filter(|v| !v.is_empty()) else {
         if stage.loop_back.is_some() {
-            return stop(
-                run,
-                Some(&stage),
-                StopReason::NoVerdict,
-                format!("No verdict could be read from {}'s reply.", stage.title),
-            );
+            return stop(run, Some(&stage), StopReason::NoVerdict, format!("No verdict could be read from {}'s reply.", stage.title));
         }
-        return advance(
-            def,
-            run,
-            index,
-            &format!("{} finished", stage.title),
-            Vec::new(),
-            Vec::new(),
-            lane,
-            turn,
-        );
+        return advance(def, run, index, &format!("{} finished", stage.title), Vec::new(), Vec::new(), lane, turn);
     };
     let threshold = stage
         .loop_back
@@ -620,10 +534,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 run,
                 Some(&stage),
                 StopReason::BlockingFindings,
-                format!(
-                    "{} asked for changes, but this stage has no loop-back.",
-                    stage.title
-                ),
+                format!("{} asked for changes, but this stage has no loop-back.", stage.title),
             );
         };
         // Rounds per loop-back edge: this reviewer's own rounds so far. With
@@ -667,21 +578,14 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     let blocking: Vec<String> = severities
         .iter()
         .filter(|(sev, _)| sev.is_some_and(|s| s.at_least(threshold)))
-        .map(|(sev, f)| {
-            format!(
-                "[{}] {}",
-                sev.map(Severity::label).unwrap_or("?"),
-                f.summary.trim()
-            )
-        })
+        .map(|(sev, f)| format!("[{}] {}", sev.map(Severity::label).unwrap_or("?"), f.summary.trim()))
         .collect();
     // A plain APPROVED that still lists findings at or above the threshold
     // is not a clean pass: stop and show them. APPROVED WITH CHANGES means
     // the reviewer applied them already, so it moves on, except at the last
     // stage, where moving on would complete the work with them unchecked.
     let last_stage = index + 1 == def.stages.len();
-    let stops_on_findings =
-        verdict == "APPROVED" || (verdict == "APPROVED WITH CHANGES" && last_stage);
+    let stops_on_findings = verdict == "APPROVED" || (verdict == "APPROVED WITH CHANGES" && last_stage);
     if stops_on_findings && report.findings_known && !blocking.is_empty() {
         let next_step = if !last_stage {
             "Check them, then send it on or back yourself."
@@ -708,11 +612,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         decision.stop_reason = Some(StopReason::BlockingFindings);
         return decision;
     }
-    let applied = if report.findings_known {
-        blocking
-    } else {
-        Vec::new()
-    };
+    let applied = if report.findings_known { blocking } else { Vec::new() };
     advance(def, run, index, verdict, follow_ups, applied, lane, turn)
 }
 
@@ -725,11 +625,7 @@ pub(crate) fn review_round(run: &PipelineRun, lane: Option<&str>, stage: &StageD
         None => &run.verdicts,
     };
     let roles = stage.roles();
-    verdicts
-        .iter()
-        .filter(|v| roles.contains(&v.role_id))
-        .count() as u32
-        + 1
+    verdicts.iter().filter(|v| roles.contains(&v.role_id)).count() as u32 + 1
 }
 
 #[cfg(test)]

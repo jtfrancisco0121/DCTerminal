@@ -13,10 +13,7 @@ fn run(stage: &str, tabs: &[(&str, &str)]) -> PipelineRun {
         "status": "running"
     }))
     .unwrap();
-    run.tab_ids = tabs
-        .iter()
-        .map(|(role, tab)| (role.to_string(), tab.to_string()))
-        .collect();
+    run.tab_ids = tabs.iter().map(|(role, tab)| (role.to_string(), tab.to_string())).collect();
     run.autopilot = Some(RunAutopilot {
         enabled: true,
         ..RunAutopilot::default()
@@ -43,10 +40,7 @@ fn log(turn_done: bool) -> TerminalSessionLog {
 }
 
 fn logs(entries: &[(&str, TerminalSessionLog)]) -> HashMap<String, TerminalSessionLog> {
-    entries
-        .iter()
-        .map(|(tab, log)| (tab.to_string(), log.clone()))
-        .collect()
+    entries.iter().map(|(tab, log)| (tab.to_string(), log.clone())).collect()
 }
 
 fn eagle1() -> PipelineDef {
@@ -57,20 +51,11 @@ fn eagle1() -> PipelineDef {
 fn finished_and_working_turns_read_like_the_frontend() {
     assert!(finished_turn(StageKind::Implementer, &log(true)));
     assert!(!working(StageKind::Implementer, &log(true)));
-    let interrupted = TerminalSessionLog {
-        interrupted: true,
-        ..log(true)
-    };
-    assert!(
-        !finished_turn(StageKind::Implementer, &interrupted),
-        "an interrupted turn is left to you"
-    );
+    let interrupted = TerminalSessionLog { interrupted: true, ..log(true) };
+    assert!(!finished_turn(StageKind::Implementer, &interrupted), "an interrupted turn is left to you");
     assert!(!working(StageKind::Implementer, &interrupted));
     assert!(working(StageKind::Implementer, &log(false)));
-    let fresh = TerminalSessionLog {
-        last_prompt_at: None,
-        ..log(false)
-    };
+    let fresh = TerminalSessionLog { last_prompt_at: None, ..log(false) };
     assert!(!working(StageKind::Implementer, &fresh), "no prompt yet");
     let plan = TerminalSessionLog {
         plan: Some("# Plan".into()),
@@ -82,19 +67,10 @@ fn finished_and_working_turns_read_like_the_frontend() {
         }),
         ..log(false)
     };
-    assert!(
-        finished_turn(StageKind::Planner, &plan),
-        "a plan awaiting approval"
-    );
+    assert!(finished_turn(StageKind::Planner, &plan), "a plan awaiting approval");
     assert!(!working(StageKind::Planner, &plan));
-    assert!(
-        working(StageKind::Implementer, &plan),
-        "only a planner stage's plan counts"
-    );
-    assert_eq!(
-        turn_key("tab_1", &log(true)),
-        format!("tab_1|{SID}|{PROMPT}")
-    );
+    assert!(working(StageKind::Implementer, &plan), "only a planner stage's plan counts");
+    assert_eq!(turn_key("tab_1", &log(true)), format!("tab_1|{SID}|{PROMPT}"));
 }
 
 fn awaiting_plan() -> TerminalSessionLog {
@@ -127,75 +103,38 @@ fn a_copied_planner_awaiting_plan_approval_reads_like_the_built_in_one() {
     let mut run = run("plan", &[("role_custom_planner", "tab_p")]);
     let tabs = current_stage_tabs(&def, &run);
     assert_eq!(tabs[0].kind, StageKind::Planner);
-    assert!(
-        !working(tabs[0].kind, &awaiting_plan()),
-        "the watchdog does not count it as Working"
-    );
+    assert!(!working(tabs[0].kind, &awaiting_plan()), "the watchdog does not count it as Working");
     let found = reconcile_run(&def, &mut run, &logs(&[("tab_p", awaiting_plan())]));
     let Some(Reconciled::Waiting { tab_id, why }) = found else {
         panic!("not waiting: {found:?}");
     };
     assert_eq!(tab_id, "tab_p");
-    assert!(
-        why.starts_with("Planner copy finished while the app was closed"),
-        "{why}"
-    );
-    assert_eq!(
-        (run.status, run.stop_reason),
-        (RunStatus::Waiting, Some(StopReason::AppRestarted))
-    );
+    assert!(why.starts_with("Planner copy finished while the app was closed"), "{why}");
+    assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::AppRestarted)));
     // The built-in Planner on a generic stage does not plan there.
     let mut generic = def.clone();
     generic.stages[0].role_id = "role_planner".into();
     generic.stages[0].kind = Some(StageKind::Generic);
     let mut other = super::tests::run("plan", &[("role_planner", "tab_p")]);
     let tabs = current_stage_tabs(&generic, &other);
-    assert!(
-        working(tabs[0].kind, &awaiting_plan()),
-        "a generic stage's open ExitPlanMode is Working"
-    );
-    assert_eq!(
-        reconcile_run(&generic, &mut other, &logs(&[("tab_p", awaiting_plan())])),
-        Some(Reconciled::CutOff)
-    );
+    assert!(working(tabs[0].kind, &awaiting_plan()), "a generic stage's open ExitPlanMode is Working");
+    assert_eq!(reconcile_run(&generic, &mut other, &logs(&[("tab_p", awaiting_plan())])), Some(Reconciled::CutOff));
 }
 
 #[test]
 fn a_finished_turn_nobody_decided_waits_with_app_restarted() {
     let def = eagle1();
-    let mut run = run(
-        "implementer",
-        &[("role_planner", "tab_p"), ("role_implementer", "tab_i")],
-    );
-    let found = reconcile_run(
-        &def,
-        &mut run,
-        &logs(&[("tab_p", log(true)), ("tab_i", log(true))]),
-    );
+    let mut run = run("implementer", &[("role_planner", "tab_p"), ("role_implementer", "tab_i")]);
+    let found = reconcile_run(&def, &mut run, &logs(&[("tab_p", log(true)), ("tab_i", log(true))]));
     let Some(Reconciled::Waiting { tab_id, why }) = found else {
         panic!("not waiting: {found:?}");
     };
-    assert_eq!(
-        tab_id, "tab_i",
-        "the current stage's tab, not an earlier one"
-    );
-    assert_eq!(
-        (run.status, run.stop_reason),
-        (RunStatus::Waiting, Some(StopReason::AppRestarted))
-    );
-    assert!(
-        why.starts_with("Implementer finished while the app was closed"),
-        "{why}"
-    );
-    assert_eq!(
-        run.autopilot.as_ref().unwrap().waiting.as_deref(),
-        Some(why.as_str())
-    );
+    assert_eq!(tab_id, "tab_i", "the current stage's tab, not an earlier one");
+    assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::AppRestarted)));
+    assert!(why.starts_with("Implementer finished while the app was closed"), "{why}");
+    assert_eq!(run.autopilot.as_ref().unwrap().waiting.as_deref(), Some(why.as_str()));
     let last = run.events.last().unwrap();
-    assert_eq!(
-        (last.kind.as_str(), last.stage_id.as_deref()),
-        ("stop", Some("implementer"))
-    );
+    assert_eq!((last.kind.as_str(), last.stage_id.as_deref()), ("stop", Some("implementer")));
     // Never decided by itself: nothing was claimed or marked decided.
     assert!(run.claims.is_empty());
     assert!(run.autopilot.as_ref().unwrap().decided.is_empty());
@@ -205,35 +144,20 @@ fn a_finished_turn_nobody_decided_waits_with_app_restarted() {
 fn a_decided_turn_or_a_run_not_running_is_left_alone() {
     let def = eagle1();
     let mut decided = run("implementer", &[("role_implementer", "tab_i")]);
-    decided
-        .autopilot
-        .as_mut()
-        .unwrap()
-        .decided
-        .push(turn_key("tab_i", &log(true)));
-    assert_eq!(
-        reconcile_run(&def, &mut decided, &logs(&[("tab_i", log(true))])),
-        None
-    );
+    decided.autopilot.as_mut().unwrap().decided.push(turn_key("tab_i", &log(true)));
+    assert_eq!(reconcile_run(&def, &mut decided, &logs(&[("tab_i", log(true))])), None);
     assert_eq!(decided.status, RunStatus::Running);
     assert!(decided.events.is_empty());
 
     for status in [RunStatus::Waiting, RunStatus::Stopped, RunStatus::Complete] {
         let mut other = run("implementer", &[("role_implementer", "tab_i")]);
         other.status = status;
-        assert_eq!(
-            reconcile_run(&def, &mut other, &logs(&[("tab_i", log(true))])),
-            None,
-            "{status:?}"
-        );
+        assert_eq!(reconcile_run(&def, &mut other, &logs(&[("tab_i", log(true))])), None, "{status:?}");
         assert_eq!(other.status, status);
     }
     let mut manual = run("implementer", &[("role_implementer", "tab_i")]);
     manual.autopilot.as_mut().unwrap().enabled = false;
-    assert_eq!(
-        reconcile_run(&def, &mut manual, &logs(&[("tab_i", log(true))])),
-        None
-    );
+    assert_eq!(reconcile_run(&def, &mut manual, &logs(&[("tab_i", log(true))])), None);
 }
 
 #[test]
@@ -242,12 +166,7 @@ fn a_bridged_turn_already_decided_is_not_stopped_as_app_restarted() {
     // the turn id from the stage's turn.json, not the log's prompt.
     let def = eagle1();
     let mut decided = run("pr_reviewer", &[("role_pr_reviewer", "tab_r")]);
-    decided
-        .autopilot
-        .as_mut()
-        .unwrap()
-        .decided
-        .push(bridge_turn_key("tab_r", "p-7"));
+    decided.autopilot.as_mut().unwrap().decided.push(bridge_turn_key("tab_r", "p-7"));
     let bridged = HashMap::from([("tab_r".to_string(), "p-7".to_string())]);
     let found = reconcile_run_with(&def, &mut decided, &logs(&[("tab_r", log(true))]), &bridged);
     assert_eq!(found, None);
@@ -256,16 +175,9 @@ fn a_bridged_turn_already_decided_is_not_stopped_as_app_restarted() {
 
     // A bridged turn nobody decided still waits for Continue.
     let mut open = run("pr_reviewer", &[("role_pr_reviewer", "tab_r")]);
-    open.autopilot
-        .as_mut()
-        .unwrap()
-        .decided
-        .push(bridge_turn_key("tab_r", "p-6"));
+    open.autopilot.as_mut().unwrap().decided.push(bridge_turn_key("tab_r", "p-6"));
     let found = reconcile_run_with(&def, &mut open, &logs(&[("tab_r", log(true))]), &bridged);
-    assert!(
-        matches!(found, Some(Reconciled::Waiting { .. })),
-        "{found:?}"
-    );
+    assert!(matches!(found, Some(Reconciled::Waiting { .. })), "{found:?}");
     assert_eq!(open.stop_reason, Some(StopReason::AppRestarted));
 }
 
@@ -273,18 +185,11 @@ fn a_bridged_turn_already_decided_is_not_stopped_as_app_restarted() {
 fn a_turn_cut_off_by_the_quit_is_noted_and_the_run_keeps_running() {
     let def = eagle1();
     let mut run = run("implementer", &[("role_implementer", "tab_i")]);
-    assert_eq!(
-        reconcile_run(&def, &mut run, &logs(&[("tab_i", log(false))])),
-        Some(Reconciled::CutOff)
-    );
+    assert_eq!(reconcile_run(&def, &mut run, &logs(&[("tab_i", log(false))])), Some(Reconciled::CutOff));
     assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
     let last = run.events.last().unwrap();
     assert_eq!(last.kind, "note");
-    assert!(
-        last.summary.contains("cut off when the app closed"),
-        "{}",
-        last.summary
-    );
+    assert!(last.summary.contains("cut off when the app closed"), "{}", last.summary);
     // No log, or a stage that never got a prompt: nothing to do.
     let mut quiet = super::tests::run("implementer", &[("role_implementer", "tab_i")]);
     assert_eq!(reconcile_run(&def, &mut quiet, &HashMap::new()), None);
@@ -314,18 +219,10 @@ fn lanes_reconcile_their_active_stage_and_parallel_reviewers_key_on_the_stage_ro
     run.lanes = vec![lane("pr1", "approved", "a"), lane("pr2", "active", "b")];
     let tabs = current_stage_tabs(&def, &run);
     let ids: Vec<(&str, bool)> = tabs.iter().map(|t| (t.tab_id.as_str(), t.own)).collect();
-    assert_eq!(
-        ids,
-        vec![("b_rev", true), ("b_sec", false)],
-        "only the active lane"
-    );
+    assert_eq!(ids, vec![("b_rev", true), ("b_sec", false)], "only the active lane");
 
     // Only the security reviewer finished: nothing autopilot would decide yet.
-    let found = reconcile_run(
-        &def,
-        &mut run.clone(),
-        &logs(&[("b_sec", log(true)), ("a_rev", log(true))]),
-    );
+    let found = reconcile_run(&def, &mut run.clone(), &logs(&[("b_sec", log(true)), ("a_rev", log(true))]));
     assert_eq!(found, None);
     let found = reconcile_run(&def, &mut run, &logs(&[("b_rev", log(true))]));
     let Some(Reconciled::Waiting { tab_id, why }) = found else {
@@ -351,19 +248,9 @@ fn quiet_counts_only_while_working_with_no_output_and_no_log_growth() {
     let at = |mins: u64| t0 + Duration::from_secs(mins * 60);
     let mut watch = StallWatch::new();
     // Quiet terminal, log growing: not stalled.
-    assert_eq!(
-        watch.observe("r|t", at(0), seen(true, 10, Some(0)), limit),
-        None
-    );
-    assert_eq!(
-        watch.observe("r|t", at(20), seen(true, 20, Some(20 * 60)), limit),
-        None
-    );
-    assert_eq!(
-        watch.observe("r|t", at(40), seen(true, 20, Some(40 * 60)), limit),
-        None,
-        "20 quiet minutes"
-    );
+    assert_eq!(watch.observe("r|t", at(0), seen(true, 10, Some(0)), limit), None);
+    assert_eq!(watch.observe("r|t", at(20), seen(true, 20, Some(20 * 60)), limit), None);
+    assert_eq!(watch.observe("r|t", at(40), seen(true, 20, Some(40 * 60)), limit), None, "20 quiet minutes");
     assert_eq!(
         watch.observe("r|t", at(50), seen(true, 20, Some(50 * 60)), limit),
         Some(Duration::from_secs(30 * 60)),
@@ -371,32 +258,14 @@ fn quiet_counts_only_while_working_with_no_output_and_no_log_growth() {
     );
     // Output on screen keeps it alive even with no log growth (a long test run).
     let mut busy = StallWatch::new();
-    assert_eq!(
-        busy.observe("r|t", at(0), seen(true, 10, Some(0)), limit),
-        None
-    );
-    assert_eq!(
-        busy.observe("r|t", at(45), seen(true, 10, Some(5)), limit),
-        None
-    );
+    assert_eq!(busy.observe("r|t", at(0), seen(true, 10, Some(0)), limit), None);
+    assert_eq!(busy.observe("r|t", at(45), seen(true, 10, Some(5)), limit), None);
     // A finished turn forgets the tab; the next turn counts afresh.
-    assert_eq!(
-        watch.observe("r|t", at(51), seen(false, 20, Some(51 * 60)), limit),
-        None
-    );
+    assert_eq!(watch.observe("r|t", at(51), seen(false, 20, Some(51 * 60)), limit), None);
     assert!(watch.is_empty());
-    assert_eq!(
-        watch.observe("r|t", at(52), seen(true, 20, Some(52 * 60)), limit),
-        None,
-        "quiet from before"
-    );
-    assert_eq!(
-        watch.observe("r|t", at(81), seen(true, 20, Some(81 * 60)), limit),
-        None
-    );
-    assert!(watch
-        .observe("r|t", at(82), seen(true, 20, Some(82 * 60)), limit)
-        .is_some());
+    assert_eq!(watch.observe("r|t", at(52), seen(true, 20, Some(52 * 60)), limit), None, "quiet from before");
+    assert_eq!(watch.observe("r|t", at(81), seen(true, 20, Some(81 * 60)), limit), None);
+    assert!(watch.observe("r|t", at(82), seen(true, 20, Some(82 * 60)), limit).is_some());
 }
 
 #[test]
@@ -404,11 +273,7 @@ fn no_terminal_counts_as_quiet_and_retain_drops_runs_that_stopped() {
     let limit = Duration::from_secs(60);
     let t0 = Instant::now();
     let mut watch = StallWatch::new();
-    let no_pty = StallObservation {
-        working: true,
-        log_len: None,
-        pty_quiet: None,
-    };
+    let no_pty = StallObservation { working: true, log_len: None, pty_quiet: None };
     assert_eq!(watch.observe("r|a", t0, no_pty, limit), None);
     assert_eq!(watch.observe("r|b", t0, no_pty, limit), None);
     assert_eq!(watch.observe("r|a", t0 + limit, no_pty, limit), Some(limit));
@@ -424,25 +289,12 @@ fn a_stall_stops_only_a_running_run_with_stalled() {
     let mut run = run("implementer", &[("role_implementer", "tab_i")]);
     let tab = current_stage_tabs(&def, &run).remove(0);
     let why = stop_stalled(&mut run, &tab, Duration::from_secs(30 * 60)).unwrap();
-    assert!(
-        why.starts_with("Implementer has been quiet for 30 minutes"),
-        "{why}"
-    );
-    assert_eq!(
-        (run.status, run.stop_reason),
-        (RunStatus::Waiting, Some(StopReason::Stalled))
-    );
+    assert!(why.starts_with("Implementer has been quiet for 30 minutes"), "{why}");
+    assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::Stalled)));
     let last = run.events.last().unwrap();
-    assert_eq!(
-        (last.kind.as_str(), last.role_id.as_deref()),
-        ("stop", Some("role_implementer"))
-    );
+    assert_eq!((last.kind.as_str(), last.role_id.as_deref()), ("stop", Some("role_implementer")));
     let before = run.events.len();
-    assert_eq!(
-        stop_stalled(&mut run, &tab, Duration::from_secs(3600)),
-        None,
-        "already waiting"
-    );
+    assert_eq!(stop_stalled(&mut run, &tab, Duration::from_secs(3600)), None, "already waiting");
     assert_eq!(run.events.len(), before);
     assert_eq!(quiet_text(Duration::from_secs(61)), "1 minute");
     assert_eq!(quiet_text(Duration::from_millis(1500)), "1 second");
@@ -456,10 +308,7 @@ fn a_taken_over_stage_never_stalls_the_run() {
     let mut run = run("implementer", &[("role_implementer", "tab_i")]);
     run.taken_over.push("tab_i".into());
     let tab = current_stage_tabs(&def, &run).remove(0);
-    assert_eq!(
-        stop_stalled(&mut run, &tab, Duration::from_secs(3600)),
-        None
-    );
+    assert_eq!(stop_stalled(&mut run, &tab, Duration::from_secs(3600)), None);
     assert_eq!(run.status, RunStatus::Running);
 }
 
@@ -470,21 +319,12 @@ fn the_startup_reconcile_skips_a_stage_you_took_over() {
     let def = eagle1();
     let mut finished = run("implementer", &[("role_implementer", "tab_i")]);
     finished.taken_over.push("tab_i".into());
-    assert_eq!(
-        reconcile_run(&def, &mut finished, &logs(&[("tab_i", log(true))])),
-        None
-    );
-    assert_eq!(
-        (finished.status, finished.stop_reason),
-        (RunStatus::Running, None)
-    );
+    assert_eq!(reconcile_run(&def, &mut finished, &logs(&[("tab_i", log(true))])), None);
+    assert_eq!((finished.status, finished.stop_reason), (RunStatus::Running, None));
     assert!(finished.events.is_empty());
 
     let mut cut_off = run("implementer", &[("role_implementer", "tab_i")]);
     cut_off.taken_over.push("tab_i".into());
-    assert_eq!(
-        reconcile_run(&def, &mut cut_off, &logs(&[("tab_i", log(false))])),
-        None
-    );
+    assert_eq!(reconcile_run(&def, &mut cut_off, &logs(&[("tab_i", log(false))])), None);
     assert!(cut_off.events.is_empty());
 }

@@ -33,11 +33,7 @@ fn record(kind: &str, at: &str, message: Value) -> Value {
 }
 
 fn prompt(at: &str) -> Value {
-    let mut v = record(
-        "user",
-        at,
-        json!({ "role": "user", "content": "Implement the plan" }),
-    );
+    let mut v = record("user", at, json!({ "role": "user", "content": "Implement the plan" }));
     v["permissionMode"] = json!("default");
     v
 }
@@ -79,21 +75,13 @@ impl Fixture {
             round: 1,
             lane: None,
         };
-        let planner = store
-            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
-            .unwrap();
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
         store.set_tab_chain(&planner, Some(chain(1)), None).unwrap();
-        let tab = store
-            .create_draft_tab(&role("role_implementer"), "/tmp/p", true, None)
-            .unwrap();
-        store
-            .set_tab_chain(&tab, Some(chain(3)), Some("the plan"))
-            .unwrap();
+        let tab = store.create_draft_tab(&role("role_implementer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&tab, Some(chain(3)), Some("the plan")).unwrap();
         let config = dir.join("claude-config");
         assert!(config.starts_with(dir.path()), "pinned to the temp dir");
-        store
-            .remember_claude_config(&tab, &config.display().to_string())
-            .unwrap();
+        store.remember_claude_config(&tab, &config.display().to_string()).unwrap();
         store.remember_claude_terminal_session(&tab, SID).unwrap();
         let run = store.pipeline_run_by_id_mut("ee_r").unwrap();
         run.set_autopilot_enabled(true);
@@ -108,11 +96,7 @@ impl Fixture {
     }
 
     fn write_log(&self, records: &[Value]) {
-        let folder = self
-            .dir
-            .join("claude-config")
-            .join("projects")
-            .join("-tmp-p");
+        let folder = self.dir.join("claude-config").join("projects").join("-tmp-p");
         std::fs::create_dir_all(&folder).unwrap();
         let body: String = records.iter().map(|r| format!("{r}\n")).collect();
         std::fs::write(folder.join(format!("{SID}.jsonl")), body).unwrap();
@@ -125,25 +109,11 @@ impl Fixture {
     }
 
     fn reconcile(&self) -> RecoveryOutcome {
-        reconcile_on_startup(
-            &self.store,
-            &self.registry,
-            &self.readers,
-            &self.dir.join("runs"),
-        )
-        .unwrap()
+        reconcile_on_startup(&self.store, &self.registry, &self.readers, &self.dir.join("runs")).unwrap()
     }
 
     fn tick(&self, watch: &mut StallWatch, now: Instant, limit: Duration) -> RecoveryOutcome {
-        watchdog_tick(
-            &self.store,
-            &self.registry,
-            &self.readers,
-            watch,
-            now,
-            &|_| limit,
-        )
-        .unwrap()
+        watchdog_tick(&self.store, &self.registry, &self.readers, watch, now, &|_| limit).unwrap()
     }
 }
 
@@ -151,10 +121,7 @@ impl Fixture {
 fn startup_leaves_a_bridged_turn_autopilot_already_decided_alone() {
     use crate::bridge::launch::{prepare_stage, BridgePlan, BridgeTag};
     let fx = Fixture::new("recover_bridged_decided");
-    fx.write_log(&[
-        prompt("2026-10-19T10:00:00Z"),
-        reply("2026-10-19T10:01:00Z"),
-    ]);
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z"), reply("2026-10-19T10:01:00Z")]);
     // The tab holds its stage's run folder, whose turn.json names turn p-7.
     let plan = BridgePlan {
         run_id: "ee_r".into(),
@@ -166,24 +133,14 @@ fn startup_leaves_a_bridged_turn_autopilot_already_decided_alone() {
         autopilot: true,
     };
     let run_dir = prepare_stage(&fx.dir.join("runs"), &plan, &fx.tab).unwrap();
-    let stage =
-        crate::bridge::folder::StageDir::open(&run_dir, "ee_r", "implementer", &fx.tab).unwrap();
-    stage
-        .write_turn(&crate::bridge::folder::TurnState::new("p-7"))
-        .unwrap();
+    let stage = crate::bridge::folder::StageDir::open(&run_dir, "ee_r", "implementer", &fx.tab).unwrap();
+    stage.write_turn(&crate::bridge::folder::TurnState::new("p-7")).unwrap();
     {
         let mut store = fx.store.lock().unwrap();
-        let tag = BridgeTag {
-            run_id: "ee_r".into(),
-            stage: "implementer".into(),
-        };
+        let tag = BridgeTag { run_id: "ee_r".into(), stage: "implementer".into() };
         store.set_tab_bridge(&fx.tab, Some(tag)).unwrap();
         let run = store.pipeline_run_by_id_mut("ee_r").unwrap();
-        run.autopilot
-            .as_mut()
-            .unwrap()
-            .decided
-            .push(format!("{}|bridge|p-7", fx.tab));
+        run.autopilot.as_mut().unwrap().decided.push(format!("{}|bridge|p-7", fx.tab));
     }
     assert_eq!(fx.reconcile(), RecoveryOutcome::default());
     assert_eq!(fx.status(), (RunStatus::Running, None));
@@ -192,28 +149,16 @@ fn startup_leaves_a_bridged_turn_autopilot_already_decided_alone() {
 #[test]
 fn startup_puts_a_run_whose_stage_finished_while_closed_in_waiting_and_saves_it() {
     let fx = Fixture::new("recover_after_turn");
-    fx.write_log(&[
-        prompt("2026-10-19T10:00:00Z"),
-        reply("2026-10-19T10:01:00Z"),
-    ]);
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z"), reply("2026-10-19T10:01:00Z")]);
     let outcome = fx.reconcile();
     assert_eq!(outcome.changed, vec!["ee_r".to_string()]);
     assert_eq!(outcome.stopped.len(), 1);
     let stop = &outcome.stopped[0];
-    assert_eq!(
-        (stop.tab_id.as_str(), stop.reason),
-        (fx.tab.as_str(), StopReason::AppRestarted)
-    );
-    assert_eq!(
-        fx.status(),
-        (RunStatus::Waiting, Some(StopReason::AppRestarted))
-    );
+    assert_eq!((stop.tab_id.as_str(), stop.reason), (fx.tab.as_str(), StopReason::AppRestarted));
+    assert_eq!(fx.status(), (RunStatus::Waiting, Some(StopReason::AppRestarted)));
     // Saved: a reopen still waits.
     let again = StateStore::open_path(fx.dir.join("state.json")).unwrap();
-    assert_eq!(
-        again.pipeline_run_by_id("ee_r").unwrap().stop_reason,
-        Some(StopReason::AppRestarted)
-    );
+    assert_eq!(again.pipeline_run_by_id("ee_r").unwrap().stop_reason, Some(StopReason::AppRestarted));
     // A second reconcile finds nothing running.
     assert_eq!(fx.reconcile(), RecoveryOutcome::default());
 }
@@ -224,11 +169,7 @@ fn startup_leaves_a_mid_turn_or_logless_run_running() {
     assert_eq!(fx.reconcile(), RecoveryOutcome::default(), "no log yet");
     fx.write_log(&[prompt("2026-10-19T10:00:00Z")]);
     let outcome = fx.reconcile();
-    assert_eq!(
-        outcome.changed,
-        vec!["ee_r".to_string()],
-        "the cut-off note is saved"
-    );
+    assert_eq!(outcome.changed, vec!["ee_r".to_string()], "the cut-off note is saved");
     assert!(outcome.stopped.is_empty());
     assert_eq!(fx.status(), (RunStatus::Running, None));
 }
@@ -236,26 +177,15 @@ fn startup_leaves_a_mid_turn_or_logless_run_running() {
 #[test]
 fn an_engine_1_run_is_manual_only_so_neither_the_reconcile_nor_the_watchdog_touches_it() {
     let fx = Fixture::new("recover_engine_1");
-    fx.store
-        .lock()
-        .unwrap()
-        .pipeline_run_by_id_mut("ee_r")
-        .unwrap()
-        .engine = 1;
-    fx.write_log(&[
-        prompt("2026-10-19T10:00:00Z"),
-        reply("2026-10-19T10:01:00Z"),
-    ]);
+    fx.store.lock().unwrap().pipeline_run_by_id_mut("ee_r").unwrap().engine = 1;
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z"), reply("2026-10-19T10:01:00Z")]);
     assert_eq!(fx.reconcile(), RecoveryOutcome::default());
     fx.write_log(&[prompt("2026-10-19T10:00:00Z")]);
     let limit = Duration::from_secs(60);
     let t0 = Instant::now();
     let mut watch = StallWatch::new();
     fx.tick(&mut watch, t0, limit);
-    assert_eq!(
-        fx.tick(&mut watch, t0 + limit * 2, limit),
-        RecoveryOutcome::default()
-    );
+    assert_eq!(fx.tick(&mut watch, t0 + limit * 2, limit), RecoveryOutcome::default());
     assert_eq!(fx.status(), (RunStatus::Running, None));
 }
 
@@ -264,27 +194,16 @@ fn continue_runs_the_run_again_and_names_the_tabs_to_decide() {
     let fx = Fixture::new("recover_continue");
     {
         let mut store = fx.store.lock().unwrap();
-        assert!(continue_after_restart(&mut store, "ee_r")
-            .unwrap_err()
-            .contains("not waiting after a restart"));
+        assert!(continue_after_restart(&mut store, "ee_r").unwrap_err().contains("not waiting after a restart"));
     }
-    fx.write_log(&[
-        prompt("2026-10-19T10:00:00Z"),
-        reply("2026-10-19T10:01:00Z"),
-    ]);
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z"), reply("2026-10-19T10:01:00Z")]);
     fx.reconcile();
     let mut store = fx.store.lock().unwrap();
-    assert_eq!(
-        continue_after_restart(&mut store, "ee_r").unwrap(),
-        vec![fx.tab.clone()]
-    );
+    assert_eq!(continue_after_restart(&mut store, "ee_r").unwrap(), vec![fx.tab.clone()]);
     let run = store.pipeline_run_by_id("ee_r").unwrap();
     assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
     assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
-    assert_eq!(
-        run.events.last().unwrap().summary,
-        "Continued by you after the restart"
-    );
+    assert_eq!(run.events.last().unwrap().summary, "Continued by you after the restart");
     assert!(continue_after_restart(&mut store, "ee_r").is_err(), "once");
     assert!(continue_after_restart(&mut store, "nope").is_err());
 }
@@ -297,22 +216,14 @@ fn the_watchdog_stops_a_quiet_working_stage_with_stalled_once() {
     let t0 = Instant::now();
     let mut watch = StallWatch::new();
     assert_eq!(fx.tick(&mut watch, t0, limit), RecoveryOutcome::default());
-    assert_eq!(
-        fx.tick(&mut watch, t0 + Duration::from_secs(29 * 60), limit),
-        RecoveryOutcome::default()
-    );
+    assert_eq!(fx.tick(&mut watch, t0 + Duration::from_secs(29 * 60), limit), RecoveryOutcome::default());
     let outcome = fx.tick(&mut watch, t0 + limit, limit);
     assert_eq!(outcome.changed, vec!["ee_r".to_string()]);
     assert_eq!(outcome.stopped[0].reason, StopReason::Stalled);
-    assert!(outcome.stopped[0]
-        .summary
-        .starts_with("Implementer has been quiet for 30 minutes"));
+    assert!(outcome.stopped[0].summary.starts_with("Implementer has been quiet for 30 minutes"));
     assert_eq!(fx.status(), (RunStatus::Waiting, Some(StopReason::Stalled)));
     // Waiting now: nothing more is watched or stopped.
-    assert_eq!(
-        fx.tick(&mut watch, t0 + limit * 2, limit),
-        RecoveryOutcome::default()
-    );
+    assert_eq!(fx.tick(&mut watch, t0 + limit * 2, limit), RecoveryOutcome::default());
     assert!(watch.is_empty());
 }
 
@@ -332,30 +243,15 @@ fn log_growth_or_a_finished_turn_keeps_the_watchdog_quiet() {
                 "stop_reason": "tool_use" }),
     );
     fx.write_log(&[prompt("2026-10-19T10:00:00Z"), tool.clone()]);
-    assert_eq!(
-        fx.tick(&mut watch, t0 + Duration::from_secs(50), limit),
-        RecoveryOutcome::default()
-    );
-    assert_eq!(
-        fx.tick(&mut watch, t0 + Duration::from_secs(100), limit),
-        RecoveryOutcome::default(),
-        "grew at 50 s"
-    );
+    assert_eq!(fx.tick(&mut watch, t0 + Duration::from_secs(50), limit), RecoveryOutcome::default());
+    assert_eq!(fx.tick(&mut watch, t0 + Duration::from_secs(100), limit), RecoveryOutcome::default(), "grew at 50 s");
     let result = record(
         "user",
         "2026-10-19T10:01:30Z",
         json!({ "role": "user", "content": [{ "tool_use_id": "toolu_1", "type": "tool_result", "content": "ok", "is_error": false }] }),
     );
-    fx.write_log(&[
-        prompt("2026-10-19T10:00:00Z"),
-        tool,
-        result,
-        reply("2026-10-19T10:02:00Z"),
-    ]);
-    assert_eq!(
-        fx.tick(&mut watch, t0 + Duration::from_secs(500), limit),
-        RecoveryOutcome::default()
-    );
+    fx.write_log(&[prompt("2026-10-19T10:00:00Z"), tool, result, reply("2026-10-19T10:02:00Z")]);
+    assert_eq!(fx.tick(&mut watch, t0 + Duration::from_secs(500), limit), RecoveryOutcome::default());
     assert!(watch.is_empty(), "a finished turn is not watched");
     assert_eq!(fx.status(), (RunStatus::Running, None));
 }
@@ -405,20 +301,9 @@ fn a_stop_found_before_the_frontend_listens_is_delivered_once_when_it_asks() {
 #[test]
 fn each_window_gets_the_held_stops_for_its_own_tabs() {
     let stops = StartupStops::default();
-    stops.deliver(
-        vec![stop("ee_1", "impl_a"), stop("ee_2", "review_b")],
-        |_| panic!("not listening yet"),
-    );
+    stops.deliver(vec![stop("ee_1", "impl_a"), stop("ee_2", "review_b")], |_| panic!("not listening yet"));
     // Window A asks first and gets only its own tab's stop; B's is kept for B.
-    assert_eq!(
-        stops.take(&ids(&["main_a", "impl_a"])),
-        vec![stop("ee_1", "impl_a")]
-    );
-    assert_eq!(
-        stops.take(&ids(&["review_b"])),
-        vec![stop("ee_2", "review_b")]
-    );
-    assert!(stops
-        .take(&ids(&["main_a", "impl_a", "review_b"]))
-        .is_empty());
+    assert_eq!(stops.take(&ids(&["main_a", "impl_a"])), vec![stop("ee_1", "impl_a")]);
+    assert_eq!(stops.take(&ids(&["review_b"])), vec![stop("ee_2", "review_b")]);
+    assert!(stops.take(&ids(&["main_a", "impl_a", "review_b"])).is_empty());
 }

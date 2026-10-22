@@ -60,23 +60,13 @@ impl StateStore {
     /// `tab_id` made, unless something else holds it: a tab on its chain, a
     /// stage tab other than `tab_id`, a lane or an overview tab. Saves.
     /// Returns whether it was removed.
-    pub fn remove_unheld_run(
-        &mut self,
-        run_id: &str,
-        chain_id: &str,
-        tab_id: &str,
-    ) -> Result<bool, String> {
-        let on_chain = self.data.tabs.iter().any(|tab| {
-            tab.chain
-                .as_ref()
-                .is_some_and(|c| c.chain_id == chain_id || c.chain_id == run_id)
-        });
-        let Some(at) = self
+    pub fn remove_unheld_run(&mut self, run_id: &str, chain_id: &str, tab_id: &str) -> Result<bool, String> {
+        let on_chain = self
             .data
-            .pipeline_runs
+            .tabs
             .iter()
-            .position(|run| run.id == run_id)
-        else {
+            .any(|tab| tab.chain.as_ref().is_some_and(|c| c.chain_id == chain_id || c.chain_id == run_id));
+        let Some(at) = self.data.pipeline_runs.iter().position(|run| run.id == run_id) else {
             return Ok(false);
         };
         let run = &self.data.pipeline_runs[at];
@@ -274,14 +264,7 @@ impl StateStore {
         verdict: Option<&str>,
         handoff_text: Option<&str>,
     ) -> Result<ChainRef, String> {
-        self.chain_loop_back_in(
-            chain_id,
-            None,
-            reviewer_role_id,
-            target_tab_id,
-            verdict,
-            handoff_text,
-        )
+        self.chain_loop_back_in(chain_id, None, reviewer_role_id, target_tab_id, verdict, handoff_text)
     }
 
     /// `chain_loop_back` for one lane of a fanned-out run (`lane`), or the
@@ -315,7 +298,8 @@ impl StateStore {
                     .position(|stage| stage.also_reviewers.iter().any(|r| r == reviewer_role_id))
             })
         });
-        let (Some(target), Some(reviewer)) = (position(&target_role), reviewer_at) else {
+        let (Some(target), Some(reviewer)) = (position(&target_role), reviewer_at)
+        else {
             return Err("That hand-off is not a loop-back on this chain.".to_string());
         };
         if target >= reviewer {
@@ -327,16 +311,10 @@ impl StateStore {
         let entry = StageVerdict {
             role_id: reviewer_role_id.to_string(),
             round: ending,
-            verdict: verdict
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(str::to_string),
+            verdict: verdict.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string),
             at: now,
         };
-        let verdict_text = verdict
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .unwrap_or("no verdict");
+        let verdict_text = verdict.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("no verdict");
         let lane_tag = lane
             .as_deref()
             .and_then(|id| run.lane(id))
@@ -352,10 +330,7 @@ impl StateStore {
             None,
         );
         let target_stage = stages[target].0.clone();
-        match lane
-            .as_deref()
-            .and_then(|id| run.lanes.iter_mut().find(|l| l.id == id))
-        {
+        match lane.as_deref().and_then(|id| run.lanes.iter_mut().find(|l| l.id == id)) {
             Some(l) => {
                 l.verdicts.push(entry);
                 l.round = ending + 1;
@@ -378,9 +353,7 @@ impl StateStore {
         if let Some(autopilot) = run.autopilot.as_mut() {
             let prefix = lane.as_deref().map(|id| format!("@{id}"));
             match prefix {
-                Some(suffix) => autopilot
-                    .gate_retries
-                    .retain(|key, _| !key.ends_with(&suffix)),
+                Some(suffix) => autopilot.gate_retries.retain(|key, _| !key.ends_with(&suffix)),
                 None => autopilot.gate_retries.clear(),
             }
         }
@@ -499,11 +472,7 @@ impl StateStore {
             let run = self
                 .pipeline_run_by_id(&run_id)
                 .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
-            (
-                run.overview_tab_id.clone(),
-                run.cwd.clone(),
-                run.kind.clone(),
-            )
+            (run.overview_tab_id.clone(), run.cwd.clone(), run.kind.clone())
         };
         let window = self.focus_window().to_string();
         let reusable = self
@@ -691,8 +660,7 @@ mod tests {
             .unwrap();
         if let Some(tab) = store.data.tabs.iter_mut().find(|t| t.id == planner) {
             tab.answers.insert("title".into(), "Fix login".into());
-            tab.answers
-                .insert("request".into(), "Users get logged out".into());
+            tab.answers.insert("request".into(), "Users get logged out".into());
             tab.answers.insert("taskType".into(), "Bug".into());
         }
         store
@@ -708,10 +676,7 @@ mod tests {
             Some("Fix login\n\nUsers get logged out")
         );
         assert_eq!(store.chain_task_type("ee_1").as_deref(), Some("Bug"));
-        assert_eq!(
-            store.overview_run_for_tab(&planner).as_deref(),
-            Some("ee_1")
-        );
+        assert_eq!(store.overview_run_for_tab(&planner).as_deref(), Some("ee_1"));
 
         let implementer = store
             .create_draft_tab(&role("role_implementer"), "/tmp/p", true, None)
@@ -737,19 +702,12 @@ mod tests {
             "role_pr_reviewer",
         ]
         .iter()
-        .map(|id| {
-            store
-                .create_draft_tab(&role(id), "/tmp/p", true, None)
-                .unwrap()
-        })
+        .map(|id| store.create_draft_tab(&role(id), "/tmp/p", true, None).unwrap())
         .collect();
         store
             .set_tab_chain(&ids[0], Some(chain("ee_9", "eagle1", 1)), None)
             .unwrap();
-        for (i, text) in ["the plan", "reviewed plan", "the report"]
-            .iter()
-            .enumerate()
-        {
+        for (i, text) in ["the plan", "reviewed plan", "the report"].iter().enumerate() {
             store
                 .set_tab_chain(
                     &ids[i + 1],
@@ -767,7 +725,10 @@ mod tests {
         assert!(!run.handoffs.contains_key("role_planner"));
         // Saved to disk too.
         let loaded = StateStore::open_path(store.path.clone()).unwrap();
-        assert_eq!(loaded.pipeline_run_by_id("ee_9").unwrap().handoffs.len(), 3);
+        assert_eq!(
+            loaded.pipeline_run_by_id("ee_9").unwrap().handoffs.len(),
+            3
+        );
     }
 
     #[test]
@@ -784,11 +745,7 @@ mod tests {
             .set_tab_chain(&implementer, Some(chain("ee_7", "eagle1", 3)), None)
             .unwrap();
         store
-            .set_tab_chain(
-                &reviewer,
-                Some(chain("ee_7", "eagle1", 4)),
-                Some("the work"),
-            )
+            .set_tab_chain(&reviewer, Some(chain("ee_7", "eagle1", 4)), Some("the work"))
             .unwrap();
         let run = store.pipeline_run_by_id_mut("ee_7").unwrap();
         run.autopilot = Some(crate::store::RunAutopilot {
@@ -810,10 +767,7 @@ mod tests {
         let run = store.pipeline_run_by_id_mut("ee_7").unwrap();
         run.add_claim("advance:implementer#1".into(), None, "you");
         let d = decide(&def, run, &turn("implementer", "impl|s|t1"));
-        assert_eq!(
-            (d.action.as_str(), d.reason.as_str()),
-            ("skip", "Implementer finished: already handed on by you.")
-        );
+        assert_eq!((d.action.as_str(), d.reason.as_str()), ("skip", "Implementer finished: already handed on by you."));
 
         // Autopilot sends the reviewer's round back and records it as its own.
         let mut review = turn("pr_reviewer", "rev|s|t2");
@@ -822,10 +776,7 @@ mod tests {
         assert_eq!(d.action, "loopBack");
         let key = d.claim.clone().unwrap();
         assert_eq!(key, "back:pr_reviewer#1");
-        assert_eq!(
-            run.claim_for(&key, None).map(|c| c.by.as_str()),
-            Some("autopilot")
-        );
+        assert_eq!(run.claim_for(&key, None).map(|c| c.by.as_str()), Some("autopilot"));
 
         // A hand-off that did not happen gives its record back; saved.
         store.release_handoff_claim("ee_7", &key).unwrap();
@@ -846,11 +797,7 @@ mod tests {
             "role_pr_reviewer",
         ]
         .iter()
-        .map(|id| {
-            store
-                .create_draft_tab(&role(id), "/tmp/p", true, None)
-                .unwrap()
-        })
+        .map(|id| store.create_draft_tab(&role(id), "/tmp/p", true, None).unwrap())
         .collect();
         for (i, id) in ids.iter().enumerate().take(2) {
             store
@@ -861,13 +808,7 @@ mod tests {
 
         // Plan Reviewer → the same Planner tab.
         let back = store
-            .chain_loop_back(
-                "ee_5",
-                "role_plan_reviewer",
-                &ids[0],
-                Some("REQUIRES REVISION"),
-                Some("fix it"),
-            )
+            .chain_loop_back("ee_5", "role_plan_reviewer", &ids[0], Some("REQUIRES REVISION"), Some("fix it"))
             .unwrap();
         assert_eq!((back.step, back.round), (1, 2));
         let run = store.pipeline_run_by_id("ee_5").unwrap();
@@ -875,14 +816,9 @@ mod tests {
         assert_eq!(run.handoffs["role_planner"].text, "fix it");
         assert_eq!(run.verdicts.len(), 1);
         assert_eq!(run.verdicts[0].role_id, "role_plan_reviewer");
-        assert_eq!(
-            (run.verdicts[0].round, run.verdicts[0].verdict.as_deref()),
-            (1, Some("REQUIRES REVISION"))
-        );
+        assert_eq!((run.verdicts[0].round, run.verdicts[0].verdict.as_deref()), (1, Some("REQUIRES REVISION")));
         // Every tab on the chain moves to round 2.
-        assert!(store.data.tabs[..2]
-            .iter()
-            .all(|t| t.chain.as_ref().unwrap().round == 2));
+        assert!(store.data.tabs[..2].iter().all(|t| t.chain.as_ref().unwrap().round == 2));
 
         // Later stages, then PR Reviewer → a new Implementer tab (the old one is gone).
         for (i, id) in ids.iter().enumerate().skip(1) {
@@ -935,39 +871,21 @@ mod tests {
             .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
             .unwrap();
         store
-            .set_tab_chain(
-                &reviewer,
-                Some(chain("ee_l", "eagle1", 2)),
-                Some("the plan"),
-            )
+            .set_tab_chain(&reviewer, Some(chain("ee_l", "eagle1", 2)), Some("the plan"))
             .unwrap();
         let run = store.pipeline_run_by_id("ee_l").unwrap();
         let last = run.events.last().unwrap();
-        assert_eq!(
-            (last.kind.as_str(), last.summary.as_str()),
-            ("handoff", "Handed to Plan Reviewer")
-        );
+        assert_eq!((last.kind.as_str(), last.summary.as_str()), ("handoff", "Handed to Plan Reviewer"));
         assert_eq!(last.detail.as_deref(), Some("the plan"));
         let autopilot = run.autopilot.as_ref().unwrap();
-        assert!(
-            autopilot.waiting.is_none(),
-            "acting yourself clears the wait"
-        );
-        assert!(autopilot
-            .passed_checkpoints
-            .contains(&"plan_reviewer".to_string()));
+        assert!(autopilot.waiting.is_none(), "acting yourself clears the wait");
+        assert!(autopilot.passed_checkpoints.contains(&"plan_reviewer".to_string()));
 
         let again = store
             .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
             .unwrap();
         store
-            .chain_loop_back(
-                "ee_l",
-                "role_plan_reviewer",
-                &again,
-                Some("REQUIRES REVISION"),
-                Some("fix it"),
-            )
+            .chain_loop_back("ee_l", "role_plan_reviewer", &again, Some("REQUIRES REVISION"), Some("fix it"))
             .unwrap();
         let kinds: Vec<&str> = store
             .pipeline_run_by_id("ee_l")
@@ -1004,34 +922,18 @@ mod tests {
             round: 1,
             lane: None,
         };
-        let build = store
-            .create_draft_tab(&role("role_implementer"), "/tmp/p", true, None)
-            .unwrap();
+        let build = store.create_draft_tab(&role("role_implementer"), "/tmp/p", true, None).unwrap();
         store.set_tab_chain(&build, Some(on(1)), None).unwrap();
-        let review = store
-            .create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None)
-            .unwrap();
-        store
-            .set_tab_chain(&review, Some(on(2)), Some("work"))
-            .unwrap();
-        let security = store
-            .create_draft_tab(&role("role_security"), "/tmp/p", true, None)
-            .unwrap();
-        store
-            .set_tab_chain(&security, Some(on(2)), Some("work"))
-            .unwrap();
+        let review = store.create_draft_tab(&role("role_pr_reviewer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&review, Some(on(2)), Some("work")).unwrap();
+        let security = store.create_draft_tab(&role("role_security"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&security, Some(on(2)), Some("work")).unwrap();
         let run = store.pipeline_run_by_id("ee_pair").unwrap();
         assert_eq!(run.tab_ids.get("role_pr_reviewer"), Some(&review));
         assert_eq!(run.tab_ids.get("role_security"), Some(&security));
         // The specialist can send the round back too.
         let chain = store
-            .chain_loop_back(
-                "ee_pair",
-                "role_security",
-                &build,
-                Some("REQUEST CHANGES"),
-                Some("fix"),
-            )
+            .chain_loop_back("ee_pair", "role_security", &build, Some("REQUEST CHANGES"), Some("fix"))
             .unwrap();
         assert_eq!((chain.step, chain.round), (1, 2));
         crate::pipelines::unregister_for_test("pair_review_test");
@@ -1044,9 +946,7 @@ mod tests {
         let tab = store
             .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
             .unwrap();
-        store
-            .set_tab_chain(&tab, Some(chain("ee_5", "eagle1", 1)), None)
-            .unwrap();
+        store.set_tab_chain(&tab, Some(chain("ee_5", "eagle1", 1)), None).unwrap();
         store.data.pipeline_runs.push(old_run("ee_6", "gone", 1));
         assert_eq!(store.new_chain_id(5), "ee_7");
     }
@@ -1076,10 +976,7 @@ mod tests {
         let live = store
             .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
             .unwrap();
-        store
-            .data
-            .pipeline_runs
-            .push(old_run("ancient_live", &live, 400));
+        store.data.pipeline_runs.push(old_run("ancient_live", &live, 400));
         for i in 0..KEEP_RECENT_RUNS + 5 {
             store
                 .data
@@ -1090,9 +987,7 @@ mod tests {
         assert_eq!(store.data.pipeline_runs.len(), KEEP_RECENT_RUNS + 1);
         assert!(store.pipeline_run_by_id("ancient_live").is_some());
         assert!(store.pipeline_run_by_id("run_0").is_some());
-        assert!(store
-            .pipeline_run_by_id(&format!("run_{}", KEEP_RECENT_RUNS + 4))
-            .is_none());
+        assert!(store.pipeline_run_by_id(&format!("run_{}", KEEP_RECENT_RUNS + 4)).is_none());
         assert!(!store.prune_pipeline_runs());
     }
 
@@ -1110,20 +1005,10 @@ mod tests {
             .set_tab_chain(&planner, Some(chain("ee_p", "eagle1", 1)), None)
             .unwrap();
         store
-            .set_tab_chain(
-                &reviewer,
-                Some(chain("ee_p", "eagle1", 2)),
-                Some("the plan"),
-            )
+            .set_tab_chain(&reviewer, Some(chain("ee_p", "eagle1", 2)), Some("the plan"))
             .unwrap();
         store
-            .chain_loop_back(
-                "ee_p",
-                "role_plan_reviewer",
-                &planner,
-                Some("REVISE"),
-                Some("fix"),
-            )
+            .chain_loop_back("ee_p", "role_plan_reviewer", &planner, Some("REVISE"), Some("fix"))
             .unwrap();
         store
             .promote_tab_to_running(
@@ -1153,16 +1038,7 @@ mod tests {
             tab.session.as_ref().map(|s| s.acp_session_id.as_str()),
             Some("sess-planner")
         );
-        assert_eq!(
-            store
-                .tab_by_id(reviewer)
-                .unwrap()
-                .chain
-                .as_ref()
-                .unwrap()
-                .round,
-            2
-        );
+        assert_eq!(store.tab_by_id(reviewer).unwrap().chain.as_ref().unwrap().round, 2);
         let run = store.pipeline_run_by_id("ee_p").expect("run");
         assert_eq!(run.round, 2);
         assert_eq!(run.verdicts.len(), 1);
@@ -1240,10 +1116,7 @@ mod tests {
         by_tag.chain_id = Some("ee_tagged".into());
         store.data.pipeline_runs.push(by_tag);
         // Only a closed overview tab points at this one.
-        store
-            .data
-            .pipeline_runs
-            .push(old_run("run_overview", "tab_gone2", 500));
+        store.data.pipeline_runs.push(old_run("run_overview", "tab_gone2", 500));
         let overview = store
             .create_pipeline_overview_tab("/tmp/p", "run_overview", "Pipeline · Plan")
             .unwrap();
@@ -1255,10 +1128,7 @@ mod tests {
                 .push(old_run(&format!("run_{i}"), "gone", i as i64 + 1));
         }
         assert!(store.prune_pipeline_runs());
-        assert!(
-            store.pipeline_run_by_id("ee_tagged").is_some(),
-            "tab {tagged} is on it"
-        );
+        assert!(store.pipeline_run_by_id("ee_tagged").is_some(), "tab {tagged} is on it");
         assert!(store.pipeline_run_by_id("run_overview").is_some());
         assert_eq!(store.data.pipeline_runs.len(), KEEP_RECENT_RUNS + 2);
     }
@@ -1267,11 +1137,7 @@ mod tests {
     fn old_run_json(id: &str, autopilot: &str, events: &[&str]) -> String {
         let events: Vec<String> = events
             .iter()
-            .map(|kind| {
-                format!(
-                    r#"{{"at":"2026-10-01T00:00:00Z","kind":"{kind}","round":1,"summary":"x"}}"#
-                )
-            })
+            .map(|kind| format!(r#"{{"at":"2026-10-01T00:00:00Z","kind":"{kind}","round":1,"summary":"x"}}"#))
             .collect();
         format!(
             r#"{{"id":"{id}","kind":"full","cwd":"/tmp/p","stage":"pr_reviewer","overviewTabId":"","tabIds":{{}},
@@ -1285,17 +1151,9 @@ mod tests {
         use crate::store::{RunStatus, StopReason};
         let path = temp_path("run_status_migration");
         let runs = [
-            old_run_json(
-                "done",
-                r#","autopilot":{"enabled":true}"#,
-                &["handoff", "complete"],
-            ),
+            old_run_json("done", r#","autopilot":{"enabled":true}"#, &["handoff", "complete"]),
             // Sent back by hand after it completed: in play again.
-            old_run_json(
-                "reopened",
-                r#","autopilot":{"enabled":true}"#,
-                &["complete", "loopBack"],
-            ),
+            old_run_json("reopened", r#","autopilot":{"enabled":true}"#, &["complete", "loopBack"]),
             old_run_json(
                 "checkpoint",
                 r#","autopilot":{"enabled":true,"waiting":"Checkpoint before Implementer: check the work so far."}"#,
@@ -1328,43 +1186,25 @@ mod tests {
         };
         assert_eq!(status("done"), (RunStatus::Complete, None));
         assert_eq!(status("reopened"), (RunStatus::Running, None));
-        assert_eq!(
-            status("checkpoint"),
-            (RunStatus::Waiting, Some(StopReason::Checkpoint))
-        );
-        assert_eq!(
-            status("capped"),
-            (RunStatus::Waiting, Some(StopReason::RoundCap))
-        );
-        assert_eq!(
-            status("busy"),
-            (RunStatus::Waiting, Some(StopReason::CarryOutFailed))
-        );
+        assert_eq!(status("checkpoint"), (RunStatus::Waiting, Some(StopReason::Checkpoint)));
+        assert_eq!(status("capped"), (RunStatus::Waiting, Some(StopReason::RoundCap)));
+        assert_eq!(status("busy"), (RunStatus::Waiting, Some(StopReason::CarryOutFailed)));
         assert_eq!(status("running"), (RunStatus::Running, None));
-        assert_eq!(
-            status("paused"),
-            (RunStatus::Stopped, Some(StopReason::PausedByYou))
-        );
+        assert_eq!(status("paused"), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
         assert_eq!(status("manual"), (RunStatus::Stopped, None));
         assert!(store.data.migrations.run_status);
 
         // Saved, the codes are on disk in snake_case, and a reload keeps
         // them instead of deriving them again.
         let mut store = store;
-        store
-            .pipeline_run_by_id_mut("running")
-            .unwrap()
-            .set_waiting(StopReason::GateFailed, "custom");
+        store.pipeline_run_by_id_mut("running").unwrap().set_waiting(StopReason::GateFailed, "custom");
         store.save().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(r#""stopReason": "gate_failed""#), "{text}");
         assert!(text.contains(r#""status": "complete""#), "{text}");
         let again = StateStore::open_path(path).unwrap();
         let run = again.pipeline_run_by_id("running").unwrap();
-        assert_eq!(
-            (run.status, run.stop_reason),
-            (RunStatus::Waiting, Some(StopReason::GateFailed))
-        );
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::GateFailed)));
     }
 
     #[test]
@@ -1375,8 +1215,7 @@ mod tests {
             assert_eq!(saved, serde_json::json!(code.as_str()));
             assert_eq!(serde_json::from_value::<StopReason>(saved).unwrap(), code);
         }
-        let names: std::collections::HashSet<_> =
-            StopReason::ALL.iter().map(|c| c.as_str()).collect();
+        let names: std::collections::HashSet<_> = StopReason::ALL.iter().map(|c| c.as_str()).collect();
         assert_eq!(names.len(), 13, "one name per code");
     }
 
@@ -1396,10 +1235,7 @@ mod tests {
             &[],
         ))
         .unwrap();
-        assert_eq!(
-            (run.status, run.stop_reason),
-            (RunStatus::Waiting, Some(StopReason::UsageLimit))
-        );
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Waiting, Some(StopReason::UsageLimit)));
     }
 
     #[test]
@@ -1421,13 +1257,8 @@ mod tests {
         let autopilot = run.autopilot.as_ref().unwrap();
         assert!(autopilot.enabled);
         assert_eq!(autopilot.decided, vec!["t|s|p".to_string()]);
-        let claim = run
-            .claim_for("advance:implementer#1", None)
-            .expect("claims are kept");
-        assert_eq!(
-            (claim.by.as_str(), claim.turn.as_deref()),
-            ("autopilot", Some("t|s|p"))
-        );
+        let claim = run.claim_for("advance:implementer#1", None).expect("claims are kept");
+        assert_eq!((claim.by.as_str(), claim.turn.as_deref()), ("autopilot", Some("t|s|p")));
 
         // Saved again, the claims stay and the re-ask's field is gone.
         store.save().unwrap();
@@ -1440,65 +1271,32 @@ mod tests {
     fn your_hand_off_or_send_back_resumes_a_waiting_run() {
         use crate::store::{RunStatus, StopReason};
         let mut store = store("resume_after_you");
-        let planner = store
-            .create_draft_tab(&role("role_planner"), "/tmp/p", true, None)
-            .unwrap();
-        store
-            .set_tab_chain(&planner, Some(chain("ee_r", "eagle1", 1)), None)
-            .unwrap();
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain("ee_r", "eagle1", 1)), None).unwrap();
         let run = store.pipeline_run_by_id_mut("ee_r").unwrap();
-        assert_eq!(
-            (run.status, run.stop_reason),
-            (RunStatus::Stopped, None),
-            "a new run is manual"
-        );
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, None), "a new run is manual");
         run.set_autopilot_enabled(true);
         run.set_waiting(StopReason::Checkpoint, "Checkpoint before Plan Reviewer");
-        let reviewer = store
-            .create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None)
-            .unwrap();
-        store
-            .set_tab_chain(
-                &reviewer,
-                Some(chain("ee_r", "eagle1", 2)),
-                Some("the plan"),
-            )
-            .unwrap();
+        let reviewer = store.create_draft_tab(&role("role_plan_reviewer"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&reviewer, Some(chain("ee_r", "eagle1", 2)), Some("the plan")).unwrap();
         let run = store.pipeline_run_by_id("ee_r").unwrap();
         assert_eq!((run.status, run.stop_reason), (RunStatus::Running, None));
         assert!(run.autopilot.as_ref().unwrap().waiting.is_none());
 
-        store.pipeline_run_by_id_mut("ee_r").unwrap().set_waiting(
-            StopReason::BlockingFindings,
-            "Plan Reviewer asked for changes",
-        );
-        store
-            .chain_loop_back(
-                "ee_r",
-                "role_plan_reviewer",
-                &planner,
-                Some("REQUIRES REVISION"),
-                None,
-            )
-            .unwrap();
-        assert_eq!(
-            store.pipeline_run_by_id("ee_r").unwrap().status,
-            RunStatus::Running
-        );
-
-        // With autopilot off, a hand-off leaves the run stopped.
         store
             .pipeline_run_by_id_mut("ee_r")
             .unwrap()
-            .set_autopilot_enabled(false);
+            .set_waiting(StopReason::BlockingFindings, "Plan Reviewer asked for changes");
         store
-            .set_tab_chain(&reviewer, Some(chain("ee_r", "eagle1", 2)), Some("plan v2"))
+            .chain_loop_back("ee_r", "role_plan_reviewer", &planner, Some("REQUIRES REVISION"), None)
             .unwrap();
+        assert_eq!(store.pipeline_run_by_id("ee_r").unwrap().status, RunStatus::Running);
+
+        // With autopilot off, a hand-off leaves the run stopped.
+        store.pipeline_run_by_id_mut("ee_r").unwrap().set_autopilot_enabled(false);
+        store.set_tab_chain(&reviewer, Some(chain("ee_r", "eagle1", 2)), Some("plan v2")).unwrap();
         let run = store.pipeline_run_by_id("ee_r").unwrap();
-        assert_eq!(
-            (run.status, run.stop_reason),
-            (RunStatus::Stopped, Some(StopReason::PausedByYou))
-        );
+        assert_eq!((run.status, run.stop_reason), (RunStatus::Stopped, Some(StopReason::PausedByYou)));
     }
 
     #[test]
@@ -1529,8 +1327,7 @@ mod tests {
         assert!(run.verdicts.is_empty());
         assert_eq!(run.overview_tab_id, "tab_x");
         let tag: ChainRef =
-            serde_json::from_str(r#"{"chainId":"ee_1","kind":"eagle1","step":2,"total":4}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"chainId":"ee_1","kind":"eagle1","step":2,"total":4}"#).unwrap();
         assert_eq!(tag.round, 1);
     }
 }

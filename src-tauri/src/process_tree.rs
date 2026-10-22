@@ -200,7 +200,8 @@ impl SharedProcess {
                 .spawn(move || {
                     shared.terminate();
                     shared.kill_after(deadline);
-                }) {
+                })
+            {
                 Ok(stopper) => Some(stopper),
                 Err(_) => {
                     self.kill_tree();
@@ -599,10 +600,7 @@ fn children_lister() -> impl Fn(u32) -> Vec<ProcInfo> {
 
 #[cfg(target_os = "linux")]
 fn proc_info(pid: u32) -> Option<ProcInfo> {
-    parse_stat(
-        pid,
-        &std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?,
-    )
+    parse_stat(pid, &std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
 }
 
 /// One `/proc/<pid>/stat` line. The comm may hold spaces and ')', so fields
@@ -993,18 +991,12 @@ pub(crate) mod tests {
         let ready = dir.join("ready");
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
-            .arg(format!(
-                "{script}\ntouch '{}'\nwhile :; do sleep 0.05; done",
-                ready.display()
-            ))
+            .arg(format!("{script}\ntouch '{}'\nwhile :; do sleep 0.05; done", ready.display()))
             // sh reports its killed `sleep` ("Terminated: 15"); keep test output clean.
             .stderr(std::process::Stdio::null());
         prepare_command(&mut cmd);
         let shared = SharedProcess::from_child(cmd.spawn().expect("spawn sh")).expect("adopt");
-        assert!(
-            wait_for_file(&ready, Duration::from_secs(5)),
-            "script ready"
-        );
+        assert!(wait_for_file(&ready, Duration::from_secs(5)), "script ready");
         shared
     }
 
@@ -1034,10 +1026,7 @@ pub(crate) mod tests {
             &format!("trap \"touch '{}'; exit 0\" TERM", handled.display()),
         );
         let stopper = shared.stop_gracefully(STOP_GRACE);
-        assert!(
-            wait_for_file(&handled, Duration::from_secs(3)),
-            "TERM trap ran"
-        );
+        assert!(wait_for_file(&handled, Duration::from_secs(3)), "TERM trap ran");
         if let Some(stopper) = stopper {
             stopper.join().unwrap();
         }
@@ -1271,10 +1260,7 @@ pub(crate) mod tests {
     #[test]
     fn remembered_pids_that_fail_a_guard_are_never_signalled() {
         let mut reused = spawn_group("sleep 30");
-        let mut same_group = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn sleep");
+        let mut same_group = Command::new("sleep").arg("30").spawn().expect("spawn sleep");
         let mut seen = proc_info(reused.id()).expect("info for a live child");
         seen.start += 1;
         let mut detached = Detached(vec![seen]);

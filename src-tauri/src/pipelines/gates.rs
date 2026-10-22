@@ -284,7 +284,8 @@ pub fn is_github_pr_url(url: &str) -> bool {
     let parts: Vec<&str> = rest.split('/').collect();
     let token = |s: &str| {
         !s.is_empty()
-            && s.chars()
+            && s
+                .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
     parts.len() == 4
@@ -324,10 +325,7 @@ pub fn run_pull_request_gate(cwd: &Path, urls: &[String]) -> GateResult {
                 if state == "CLOSED" {
                     problems.push(format!("{url} is closed."));
                 }
-                output.push(format!(
-                    "{url}: {}",
-                    if state.is_empty() { "found" } else { &state }
-                ));
+                output.push(format!("{url}: {}", if state.is_empty() { "found" } else { &state }));
             }
             Ok(ran) => {
                 problems.push(format!("{url} was not found."));
@@ -370,27 +368,19 @@ mod tests {
         .unwrap();
         assert_eq!(auto_check_command(dir.path()), None);
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
-        assert_eq!(
-            auto_check_command(dir.path()).as_deref(),
-            Some("cargo test")
-        );
+        assert_eq!(auto_check_command(dir.path()).as_deref(), Some("cargo test"));
         std::fs::write(
             dir.path().join("package.json"),
             r#"{"scripts":{"check":"node check.mjs","test":"vitest"}}"#,
         )
         .unwrap();
-        assert_eq!(
-            auto_check_command(dir.path()).as_deref(),
-            Some("npm run check")
-        );
+        assert_eq!(auto_check_command(dir.path()).as_deref(), Some("npm run check"));
     }
 
     #[test]
     fn only_plain_github_pull_request_urls_reach_the_shell() {
         assert!(is_github_pr_url("https://github.com/jt/DCTerminal/pull/45"));
-        assert!(!is_github_pr_url(
-            "https://github.com/jt/DCTerminal/pull/45; rm -rf ~"
-        ));
+        assert!(!is_github_pr_url("https://github.com/jt/DCTerminal/pull/45; rm -rf ~"));
         assert!(!is_github_pr_url("https://github.com/jt/DCTerminal/pull/x"));
         assert!(!is_github_pr_url("https://gitlab.com/jt/repo/pull/1"));
         assert!(!is_github_pr_url("https://github.com/jt/repo/pull/1/files"));

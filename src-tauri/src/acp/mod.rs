@@ -9,13 +9,13 @@ mod probe;
 pub(crate) mod request_handler;
 mod request_id;
 pub use request_id::RequestId;
-#[cfg(test)]
-mod claude_fixture_tests;
 pub(crate) mod session_connect;
 mod session_update;
+pub(crate) mod text_extract;
+#[cfg(test)]
+mod claude_fixture_tests;
 #[cfg(all(test, unix))]
 pub(crate) mod test_agent;
-pub(crate) mod text_extract;
 
 pub use client::{AcpClient, ModelVia, PromptResult};
 pub use probe::{probe_acp, probe_acp_handshake};
