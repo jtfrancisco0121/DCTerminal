@@ -509,7 +509,7 @@ pub fn send_ticked(client: &ClickUp, wb: &mut Writeback, now: &str) -> SendRepor
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::clickup::client::tests::{ok, status, FakeClock, Recorded};
     use crate::clickup::intake::{SnapshotLimits, SnapshotSource, Ticket, TicketRow, LIMITS};
@@ -518,7 +518,7 @@ mod tests {
     const RUN: &str = "ee_1760000000300";
     const NOW: &str = "2026-10-22T12:00:00.000Z";
 
-    fn ticket(id: &str, custom: Option<&str>, list: Option<&str>) -> Ticket {
+    pub(crate) fn ticket(id: &str, custom: Option<&str>, list: Option<&str>) -> Ticket {
         Ticket {
             row: TicketRow {
                 id: id.into(),
@@ -540,7 +540,7 @@ mod tests {
         }
     }
 
-    fn snapshot(tickets: Vec<Ticket>) -> TicketsSnapshot {
+    pub(crate) fn snapshot(tickets: Vec<Ticket>) -> TicketsSnapshot {
         TicketsSnapshot {
             schema: 1,
             source: SnapshotSource {

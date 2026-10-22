@@ -92,11 +92,11 @@ pub struct IntakeCheck {
     pub changed: Vec<ChangedTicket>,
 }
 
-fn now_text() -> String {
+pub(crate) fn now_text() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
     mutex.lock().map_err(|e| e.to_string())
 }
 
@@ -106,7 +106,7 @@ pub(crate) fn window_account(store: &Mutex<StateStore>, window_id: &str) -> Resu
 }
 
 /// `account_id`'s token and workspace id, or why intake cannot use them.
-fn access(deps: &Deps, account_id: &str) -> Result<(ClickUpToken, String), String> {
+pub(crate) fn access(deps: &Deps, account_id: &str) -> Result<(ClickUpToken, String), String> {
     let account = account_of(deps.settings, account_id)?;
     let (token, _) = deps.token(&account)?;
     let Some(token) = token else {
@@ -279,7 +279,7 @@ pub(crate) fn intake_for_start(
     IntakeLaunch { tail: if placed { String::new() } else { note.clone() }, write, note }
 }
 
-fn read_snapshot(runs_root: &Path, run_id: &str) -> Result<Option<(PathBuf, TicketsSnapshot)>, String> {
+pub(crate) fn read_snapshot(runs_root: &Path, run_id: &str) -> Result<Option<(PathBuf, TicketsSnapshot)>, String> {
     let run_dir = folder::run_dir(runs_root, run_id).ok_or_else(|| format!("not a run id: {run_id}"))?;
     let path = run_dir.join(TICKETS_FILE);
     if !path.is_file() {

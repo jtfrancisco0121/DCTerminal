@@ -109,6 +109,10 @@ use commands::{
     clickup_intake_status,
 };
 use commands::{
+    clickup_list_statuses, clickup_status_map_set, clickup_status_maps, clickup_writeback_edit,
+    clickup_writeback_load, clickup_writeback_send,
+};
+use commands::{
     github_claim_notifications, github_feed, github_push_commits, github_save_filters,
     github_status,
 };
@@ -244,6 +248,8 @@ pub fn run() {
             app.manage(github::GithubSync::new());
             // C2: ClickUp intake snapshots waiting for their start, and change checks.
             app.manage(commands::IntakeState::default());
+            // C3: keeps a send of ClickUp updates apart from edits to them.
+            app.manage(commands::WritebackState::default());
             app.manage(Mutex::new(crate::usage::UsageStore::open(&data_dir)));
             app.manage(Mutex::new(SessionRegistry::new()));
             app.manage(Mutex::new(PtyRegistry::new()));
@@ -323,6 +329,12 @@ pub fn run() {
             clickup_intake_snapshot,
             clickup_intake_check,
             clickup_intake_pull,
+            clickup_writeback_load,
+            clickup_writeback_edit,
+            clickup_writeback_send,
+            clickup_list_statuses,
+            clickup_status_map_set,
+            clickup_status_maps,
             set_preview_url,
             get_pipeline_run,
             pipeline_defs_list,
