@@ -27,6 +27,8 @@ import { autopilotUsageLine, type RateWindow } from "../usage/limits";
 import { eventLabel, eventTime, followUps, formatRunReport, reviewRound, stageTitle } from "../pipeline/runReport";
 import { githubPrUrls } from "../handoff/map";
 import { lanesFromReply, lanesFromTasks } from "../pipeline/prPlan";
+import { minFanOutLanes } from "../pipeline/workspace";
+import { useWorkspaceRepos } from "../pipeline/useWorkspaceRepos";
 import { errorText } from "./InlineNotice";
 import { RunLanes } from "./RunLanes";
 import { VerifyWaitPanel } from "./VerifyWaitPanel";
@@ -178,6 +180,8 @@ export function PipelineOverview({
   const [checking, setChecking] = useState<Record<string, boolean>>({});
   /** Engine 2: the Planner's tasks (`tasks.json`), which the fan-out offer reads. */
   const [runTasks, setRunTasks] = useState<PlannedTask[] | null>(null);
+  /** W1: the run's folder is a workspace of repos: one pull request fans out too. */
+  const workspace = useWorkspaceRepos(run?.cwd ?? "")?.workspace ?? false;
 
   const reload = useCallback(async () => {
     try {
@@ -458,8 +462,8 @@ export function PipelineOverview({
   const plannedPrs =
     run.chainId && !lanes.length && planTab && fanStage
       ? runTasks
-        ? lanesFromTasks(runTasks)
-        : lanesFromReply(stageReply(planTab, runtimes[planTab.id], terminalReader, sessionLogs))
+        ? lanesFromTasks(runTasks, minFanOutLanes(workspace))
+        : lanesFromReply(stageReply(planTab, runtimes[planTab.id], terminalReader, sessionLogs), minFanOutLanes(workspace))
       : [];
   const implementerStarted = !!fanStage && !!tabs.find(
     (t) => t.id === run.tabIds[fanStage.roleId] && t.phase !== "draft",
@@ -722,14 +726,21 @@ export function PipelineOverview({
         })}
       </div>
 
-      {plannedPrs.length >= 2 && onFanOut && !implementerStarted && (
+      {plannedPrs.length >= minFanOutLanes(workspace) && onFanOut && !implementerStarted && (
         <section className="pipeline-fan-out" aria-label="Fan out">
           <h3>Fan out by pull request</h3>
-          <p className="hint">
-            The plan ships as {plannedPrs.length} pull requests. Fan out gives each one its own
-            Implementer in its own git worktree, then its own PR Reviewer. Pull requests that build
-            on another wait until that one is approved.
-          </p>
+          {plannedPrs.length === 1 ? (
+            <p className="hint">
+              This run&apos;s folder is a workspace of repos, not a git repo. Fan out gives the pull
+              request its Implementer in a git worktree of its repo, then its PR Reviewer.
+            </p>
+          ) : (
+            <p className="hint">
+              The plan ships as {plannedPrs.length} pull requests. Fan out gives each one its own
+              Implementer in its own git worktree, then its own PR Reviewer. Pull requests that build
+              on another wait until that one is approved.
+            </p>
+          )}
           <ul>
             {plannedPrs.map((pr) => (
               <li key={pr.id}>
@@ -741,7 +752,7 @@ export function PipelineOverview({
             ))}
           </ul>
           <button type="button" className="primary-button" disabled={busy} onClick={() => void fanOut()}>
-            Fan out into {plannedPrs.length} Implementers
+            Fan out into {plannedPrs.length} Implementer{plannedPrs.length === 1 ? "" : "s"}
           </button>
         </section>
       )}

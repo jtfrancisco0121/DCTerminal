@@ -220,6 +220,18 @@ pub fn write_story_mark(runs_root: &Path, run: &PipelineRun, stage_key: &str, la
 /// task's `repo` against these names, and it only sees the run folder.
 /// Written at every bridged launch, so a re-plan sees the list as it is now.
 pub fn write_run_repos(run_dir: &Path, repos: &[crate::store::RepoEntry]) -> Result<(), String> {
+    write_run_repos_in(run_dir, repos, false)
+}
+
+/// W1: [`write_run_repos`] with the run's repos as [`workspace_repos`]
+/// built them, and whether its folder is a workspace.
+///
+/// [`workspace_repos`]: crate::workspace_repos::workspace_repos
+pub fn write_workspace_repos(run_dir: &Path, repos: &crate::workspace_repos::WorkspaceRepos) -> Result<(), String> {
+    write_run_repos_in(run_dir, &repos.repos, repos.workspace)
+}
+
+fn write_run_repos_in(run_dir: &Path, repos: &[crate::store::RepoEntry], workspace: bool) -> Result<(), String> {
     let repos: Vec<folder::RunRepo> = repos
         .iter()
         .map(|repo| folder::RunRepo {
@@ -227,7 +239,7 @@ pub fn write_run_repos(run_dir: &Path, repos: &[crate::store::RepoEntry]) -> Res
             folder: repo.folder.clone(),
         })
         .collect();
-    folder::write_repos(run_dir, &repos).map_err(|err| format!("could not write {}: {err}", run_dir.join(folder::REPOS_FILE).display()))
+    folder::write_repos(run_dir, &repos, workspace).map_err(|err| format!("could not write {}: {err}", run_dir.join(folder::REPOS_FILE).display()))
 }
 
 fn bridge_args(mode: &str, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> Vec<String> {

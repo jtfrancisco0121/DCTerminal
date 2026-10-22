@@ -2744,6 +2744,18 @@ export async function setReposSettings(repos: RepoEntry[]): Promise<RepoEntry[]>
   return invoke<RepoEntry[]>("set_repos_settings", { repos });
 }
 
+/**
+ * W1: a run's repos for a start folder. `workspace`: the folder is not a git
+ * repo but holds repos as child folders; `repos` are then those repos (named
+ * after their folders, with detected checks) merged with Settings › Repos.
+ * Otherwise `repos` is Settings › Repos unchanged.
+ */
+export type WorkspaceRepos = { workspace: boolean; repos: RepoEntry[] };
+
+export async function workspaceReposFor(folder: string): Promise<WorkspaceRepos> {
+  return invoke<WorkspaceRepos>("workspace_repos_for", { folder });
+}
+
 /** U7/U8: colour theme, optional shortcut bar, dismissed one-time tips. */
 export type UiSettings = {
   theme: string;

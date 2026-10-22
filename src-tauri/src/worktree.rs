@@ -174,6 +174,18 @@ fn main_root(dir: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "not a git repository".to_string())
 }
 
+/// The top folder of the git work tree that contains `path` (W1), as git
+/// prints it (`git rev-parse --show-toplevel`); `None` when `path` is not
+/// inside one. Read-only.
+pub fn work_tree_top(path: &Path) -> Option<PathBuf> {
+    if !path.is_dir() {
+        return None;
+    }
+    let top = git(path, &["rev-parse", "--show-toplevel"]).ok()?;
+    let top = top.trim();
+    (!top.is_empty()).then(|| PathBuf::from(top))
+}
+
 /// Read-only look at the repository that contains `path`.
 pub fn repo_info(path: &Path) -> Result<RepoInfo, String> {
     if !path.is_dir() {

@@ -315,6 +315,12 @@ pub trait Host: Send + Sync + 'static {
     fn repos(&self) -> Vec<crate::store::RepoEntry> {
         Vec::new()
     }
+    /// W1: the repos of a run started in `start_folder`: [`Self::repos`]
+    /// merged with the repos found there when it is a workspace. Runs
+    /// `git`, so it is called with no store lock held.
+    fn run_repos(&self, start_folder: &std::path::Path) -> crate::workspace_repos::WorkspaceRepos {
+        crate::workspace_repos::workspace_repos(start_folder, &self.repos())
+    }
 }
 
 type Senders = HashMap<String, Sender<ActorMsg>>;

@@ -445,8 +445,9 @@ impl<H: Host> Rounds<H> {
             &run_dir.join(ROUND_PLAN_FILE),
             &dir,
         );
-        let repos = self.host.repos();
-        let instructions = crate::bridge::schema::stage_instructions(bridge.kind, &repos);
+        // W1: with the repos of the round's folder when it is a workspace.
+        let repos = self.host.run_repos(&cwd);
+        let instructions = crate::bridge::schema::stage_instructions_for(bridge.kind, &repos, None);
         let preview = crate::template::merge_role_prompt_with(&role, &values, &instructions);
         if !preview.errors.is_empty() {
             let problems: Vec<String> = preview.errors.iter().map(|e| e.message.clone()).collect();
@@ -525,7 +526,7 @@ impl<H: Host> Rounds<H> {
         role: &Role,
         prompt: &str,
         session_id: &str,
-        repos: &[crate::store::RepoEntry],
+        repos: &crate::workspace_repos::WorkspaceRepos,
     ) -> Result<(), String> {
         let bridged = self.host.bridge_gate(&bridge.run_id, &bridge.stage_key, cwd)?;
         let runs_root = self.host.runs_root();
@@ -537,7 +538,7 @@ impl<H: Host> Rounds<H> {
                 .bridge_program()
                 .ok_or("DCTerminal could not find its own executable for the pipeline bridge.")?;
             let run_dir = crate::bridge::launch::prepare_stage(&runs_root, bridge, tab_id)?;
-            crate::bridge::launch::write_run_repos(&run_dir, repos)?;
+            crate::bridge::launch::write_workspace_repos(&run_dir, repos)?;
             let tag = BridgeTag { run_id: bridge.run_id.clone(), stage: bridge.stage_key.clone() };
             lock(self.host.store()).set_tab_bridge(tab_id, Some(tag))?;
             Some(crate::bridge::launch::launch_flags(bridge.kind, &program, &run_dir, &bridge.run_id, &bridge.stage_key, tab_id))

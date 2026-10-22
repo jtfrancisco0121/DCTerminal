@@ -35,6 +35,7 @@ pub mod template;
 pub mod turn_changes;
 mod usage;
 mod windows;
+mod workspace_repos;
 pub mod worktree;
 
 /// What `tests/fake_claude.rs` drives: the PTY and the session-log reader.
@@ -140,6 +141,7 @@ use pty::{
 };
 use std::sync::Mutex;
 use store::repos_settings::{get_repos_settings, set_repos_settings};
+use workspace_repos::workspace_repos_for;
 use store::{
     get_notification_settings, get_ui_settings, set_notification_settings, set_ui_settings,
     ActivityStore, FormsStore, HandoffStore, ProjectsStore, PromptStore, RolesStore, ScratchStore,
@@ -445,6 +447,7 @@ pub fn run() {
             set_ui_settings,
             get_repos_settings,
             set_repos_settings,
+            workspace_repos_for,
             git_repo_info,
             worktree_tab_new,
             worktree_tab_check,

@@ -25,10 +25,13 @@ vi.mock("../bridge", () => ({
   })),
   changesList: vi.fn(async () => ({ state: "none" })),
   getPipelineRun: vi.fn(async () => null),
-  getReposSettings: vi.fn(async () => [
-    { name: "backend", folder: "/src/backend" },
-    { name: "engine", folder: "/src/engine" },
-  ]),
+  workspaceReposFor: vi.fn(async () => ({
+    workspace: false,
+    repos: [
+      { name: "backend", folder: "/src/backend" },
+      { name: "engine", folder: "/src/engine" },
+    ],
+  })),
   terminalPlanFile: vi.fn(async () => null),
   validateAndPreview: vi.fn(async () => ({ errors: [] })),
   handoffSave: vi.fn(async (input: Record<string, unknown>) => ({ ...input, id: `h-${String(input.chain && (input.chain as { lane?: string }).lane)}` })),
@@ -40,7 +43,7 @@ vi.mock("../bridge", () => ({
 
 import {
   getPipelineRun,
-  getReposSettings,
+  workspaceReposFor,
   gitRepoInfo,
   handoffAttach,
   handoffGet,
@@ -274,7 +277,7 @@ describe("fan out", () => {
   });
 
   it("a lane whose repo left Settings › Repos stops fan-out before git, naming it (L1)", async () => {
-    vi.mocked(getReposSettings).mockResolvedValueOnce([{ name: "backend", folder: "/src/backend" }]);
+    vi.mocked(workspaceReposFor).mockResolvedValueOnce({ workspace: false, repos: [{ name: "backend", folder: "/src/backend" }] });
     await expect(
       fanOutRun(
         {
@@ -296,7 +299,7 @@ describe("fan out", () => {
       { run, stage: pipelineDef("eagle1")!.stages[2], source, sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 } },
       { startTerminal: vi.fn(async (tabId: string) => tabId), syncForm: vi.fn(async () => {}), refreshTabs: async () => {}, roles: null },
     );
-    expect(getReposSettings).not.toHaveBeenCalled();
+    expect(workspaceReposFor).not.toHaveBeenCalled();
     expect(vi.mocked(worktreeTabNew).mock.calls.every((c) => c[0].repoPath === "/repo")).toBe(true);
   });
 
@@ -313,6 +316,78 @@ describe("fan out", () => {
       ),
     ).rejects.toThrow("fewer than two");
     expect(pipelineFanOut).not.toHaveBeenCalled();
+    expect(worktreeTabNew).not.toHaveBeenCalled();
+  });
+
+  // W1: the run started in ~/Documents/Koneksi, a folder of repos.
+  const koneksi: PipelineRun = { ...run, cwd: "/ws" };
+  const koneksiRepos = {
+    workspace: true,
+    repos: [
+      { name: "koneksi-backend", folder: "/ws/koneksi-backend", check: "cd server && go test ./..." },
+      { name: "koneksi-engine", folder: "/ws/koneksi-engine", check: "go test ./..." },
+    ],
+  };
+
+  it("in a workspace, a one-task plan fans out into one lane in a worktree of its repo (W1)", async () => {
+    vi.mocked(workspaceReposFor).mockResolvedValueOnce(koneksiRepos);
+    const startTerminal = vi.fn(
+      async (tabId: string, _roleId: string, _values: Record<string, string>, _plan: string | null) => tabId,
+    );
+    const result = await fanOutRun(
+      {
+        run: koneksi,
+        stage: pipelineDef("eagle1")!.stages[2],
+        source,
+        sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 },
+        tasks: [{ id: "pr1", title: "Heartbeat", dependsOn: [], manual: false, summary: "Send it.", repo: "koneksi-engine" }],
+      },
+      { startTerminal, syncForm: vi.fn(async () => {}), refreshTabs: async () => {}, roles: null },
+    );
+    expect(result).toEqual({ started: ["pr1"], waiting: [] });
+    expect(workspaceReposFor).toHaveBeenCalledWith("/ws");
+    expect(vi.mocked(worktreeTabNew).mock.calls.map((c) => [c[0].repoPath, c[0].branch])).toEqual([
+      ["/ws/koneksi-engine", "ee_1-pr1"],
+    ]);
+    expect(vi.mocked(pipelineFanOut).mock.calls[0][2]).toEqual([
+      { id: "pr1", title: "PR1 — Heartbeat", dependsOn: [], repo: "koneksi-engine" },
+    ]);
+    expect(startTerminal.mock.calls[0]?.[2].cwd).toBe("/repo-worktrees/ee_1-pr1");
+  });
+
+  it("in a workspace, two tasks fan out each in its own repo, and a lane with no repo stops before git (W1)", async () => {
+    vi.mocked(workspaceReposFor).mockResolvedValueOnce(koneksiRepos);
+    const tasks = [
+      { id: "pr1", title: "API", dependsOn: [], manual: false, summary: "a", repo: "koneksi-backend" },
+      { id: "pr2", title: "Client", dependsOn: ["pr1"], manual: false, summary: "b", repo: "koneksi-engine" },
+    ];
+    const args = { run: koneksi, stage: pipelineDef("eagle1")!.stages[2], source, sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 } };
+    const deps = { startTerminal: vi.fn(async (tabId: string) => tabId), syncForm: vi.fn(async () => {}), refreshTabs: async () => {}, roles: null };
+    await fanOutRun({ ...args, tasks }, deps);
+    expect(vi.mocked(worktreeTabNew).mock.calls.map((c) => c[0].repoPath)).toEqual(["/ws/koneksi-backend", "/ws/koneksi-engine"]);
+
+    vi.clearAllMocks();
+    vi.mocked(workspaceReposFor).mockResolvedValueOnce(koneksiRepos);
+    const missing = [{ ...tasks[0], repo: "koneksi-backend" }, { ...tasks[1], repo: undefined }];
+    await expect(fanOutRun({ ...args, tasks: missing }, deps)).rejects.toThrow(
+      "PR2 — Client names no repo, and /ws is a folder of repos, not a git repo.",
+    );
+    expect(worktreeTabNew).not.toHaveBeenCalled();
+  });
+
+  it("outside a workspace, a one-task plan still does not fan out (W1)", async () => {
+    await expect(
+      fanOutRun(
+        {
+          run,
+          stage: pipelineDef("eagle1")!.stages[2],
+          source,
+          sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 },
+          tasks: [{ id: "pr1", title: "One", dependsOn: [], manual: false, summary: "a" }],
+        },
+        { startTerminal: vi.fn(), syncForm: vi.fn(), refreshTabs: async () => {}, roles: null },
+      ),
+    ).rejects.toThrow("fewer than two");
     expect(worktreeTabNew).not.toHaveBeenCalled();
   });
 

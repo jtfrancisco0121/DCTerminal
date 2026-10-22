@@ -44,6 +44,8 @@ struct TestHost {
     hold_usage: Mutex<Option<Receiver<()>>>,
     /// The pull requests each pull-request gate was given.
     pr_gate_urls: Mutex<Vec<Vec<String>>>,
+    /// W1: every gate run, with the folder it ran in.
+    ran_gates: Mutex<Vec<(GateDef, PathBuf)>>,
     /// The D24 gate's answer for the next bridged opens (false: engine 1).
     gate_open: AtomicBool,
     /// Session-log usage-limit errors by tab (H5).
@@ -93,11 +95,14 @@ impl Host for TestHost {
     fn terminal_live(&self, tab_id: &str) -> bool {
         self.live.lock().unwrap().contains(tab_id)
     }
-    fn run_gate(&self, gate: &GateDef, _folder: &Path, pr_urls: &[String]) -> GateResult {
+    fn run_gate(&self, gate: &GateDef, folder: &Path, pr_urls: &[String]) -> GateResult {
         if matches!(gate, GateDef::PullRequest) {
             self.pr_gate_urls.lock().unwrap().push(pr_urls.to_vec());
         }
+        self.ran_gates.lock().unwrap().push((gate.clone(), folder.to_path_buf()));
         let label = match gate {
+            // W1: a repo's own check is labelled with what ran, as the app's gate runner does.
+            GateDef::Command { run, .. } if run != "auto" => run.as_str(),
             GateDef::Command { .. } => "npm run check",
             GateDef::PullRequest => "pull requests",
             GateDef::Verify { .. } => "verify",
@@ -220,6 +225,7 @@ impl Fixture {
             panic_on_usage: AtomicBool::new(false),
             hold_usage: Mutex::new(None),
             pr_gate_urls: Mutex::new(Vec::new()),
+            ran_gates: Mutex::new(Vec::new()),
             gate_open: AtomicBool::new(true),
             rate_limits: Mutex::new(HashMap::new()),
             stops: Mutex::new(Vec::new()),
@@ -2749,3 +2755,7 @@ fn a_loop_back_to_the_implementer_skips_no_story() {
 // F1: artifact stages on the actor, with this file's fixture.
 #[path = "artifact_tests.rs"]
 mod artifact_tests;
+
+/// W1: runs started in a workspace folder of repos.
+#[path = "workspace_tests.rs"]
+mod workspace;

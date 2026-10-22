@@ -168,7 +168,9 @@ pub fn projects_remove(
     store.save()
 }
 
-/// Same rules as session start: the path must exist, be a directory, and be readable.
+/// Same rules as session start: the path must exist, be a directory, and be
+/// readable. It need not be a git repo: a workspace folder of repos (W1)
+/// and a plain folder both pass.
 #[tauri::command]
 pub fn check_working_folder(path: String) -> Result<String, String> {
     let trimmed = path.trim();
@@ -427,6 +429,22 @@ mod tests {
         let real = crate::test_support::test_root();
         let ok = check_working_folder(format!("  {}  ", real.display())).unwrap();
         assert_eq!(ok, real.display().to_string().trim());
+    }
+
+    /// W1: a folder of repos that is not a repo itself is a working folder,
+    /// and so is a plain folder with no repos, as before.
+    #[test]
+    fn a_workspace_folder_and_a_plain_folder_are_both_accepted() {
+        let dir = crate::test_support::TempDir::new("w1_check_folder");
+        let repo = dir.join("koneksi-engine");
+        std::fs::create_dir_all(&repo).unwrap();
+        let out = std::process::Command::new("git").arg("-C").arg(&repo).args(["init", "-q"]).output().unwrap();
+        assert!(out.status.success());
+        assert!(crate::workspace_repos::workspace_repos(dir.path(), &[]).workspace);
+        assert_eq!(check_working_folder(dir.path().display().to_string()).unwrap(), dir.path().display().to_string());
+        let plain = crate::test_support::TempDir::new("w1_check_plain");
+        assert!(!crate::workspace_repos::workspace_repos(plain.path(), &[]).workspace);
+        assert!(check_working_folder(plain.path().display().to_string()).is_ok());
     }
 }
 

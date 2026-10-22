@@ -501,6 +501,14 @@ pub fn planner_tasks_with(plan: &str, repos: &[String]) -> Result<Vec<PlannedTas
 /// [`planner_tasks_with`], where a story's `tickets` must be ids (or
 /// custom ids, any case) of the run's `tickets.json` when it has one (L3).
 pub fn planner_tasks_checked(plan: &str, repos: &[String], tickets: Option<&[String]>) -> Result<Vec<PlannedTask>, Vec<String>> {
+    planner_tasks_in(plan, repos, tickets, false)
+}
+
+/// [`planner_tasks_checked`] for a run whose folder may be a workspace of
+/// repos (W1, `repos.json`): there, every task that opens a pull request
+/// must name its `repo`, and the problem lists the valid names so Claude
+/// fixes the plan in the same turn.
+pub fn planner_tasks_in(plan: &str, repos: &[String], tickets: Option<&[String]>, workspace: bool) -> Result<Vec<PlannedTask>, Vec<String>> {
     if plan.trim().is_empty() {
         return Err(vec!["the plan is empty".to_string()]);
     }
@@ -526,10 +534,10 @@ pub fn planner_tasks_checked(plan: &str, repos: &[String], tickets: Option<&[Str
         ));
         return Err(problems);
     };
-    check_tasks(&value, repos, tickets)
+    check_tasks(&value, repos, tickets, workspace)
 }
 
-fn check_tasks(value: &Value, repos: &[String], tickets: Option<&[String]>) -> Result<Vec<PlannedTask>, Vec<String>> {
+fn check_tasks(value: &Value, repos: &[String], tickets: Option<&[String]>, workspace: bool) -> Result<Vec<PlannedTask>, Vec<String>> {
     let Some(object) = value.as_object() else {
         return Err(vec!["the tasks block must be a JSON object with `tasks`".to_string()]);
     };
@@ -596,6 +604,15 @@ fn check_tasks(value: &Value, repos: &[String], tickets: Option<&[String]>) -> R
             }
         };
         let repo = task_repo(task.get("repo"), &at, repos, &mut problems);
+        // W1: in a workspace there is no home repo, so a pull request's task names one.
+        let left_out = match task.get("repo") {
+            None | Some(Value::Null) => true,
+            Some(Value::String(text)) => text.trim().is_empty(),
+            Some(_) => false,
+        };
+        if workspace && !manual && left_out {
+            problems.push(workspace_repo_missing(&at, repos));
+        }
         let stories = task_stories(task.get("stories"), &at, manual, tickets, &mut problems);
         if let Some(id) = id.clone().filter(|id| valid_task_id(id)) {
             linked.push((id, depends_on.clone()));
@@ -786,6 +803,14 @@ fn task_repo(value: Option<&Value>, at: &str, repos: &[String], problems: &mut V
         )
     });
     None
+}
+
+/// W1: the problem for a task with no `repo` in a workspace run.
+fn workspace_repo_missing(at: &str, repos: &[String]) -> String {
+    format!(
+        "`{at}.repo` is missing: this run's folder is a workspace of repos, not a git repo, so every task that opens a pull request names its repo, one of {}",
+        list(&repos.iter().map(String::as_str).collect::<Vec<_>>())
+    )
 }
 
 fn valid_task_id(id: &str) -> bool {
@@ -1003,9 +1028,30 @@ pub fn stage_instructions(kind: ResultKind, repos: &[crate::store::RepoEntry]) -
 /// [`stage_instructions`], where an artifact stage (F1) is also told the
 /// run folder its documents go in (`run_dir`).
 pub fn stage_instructions_in(kind: ResultKind, repos: &[crate::store::RepoEntry], run_dir: Option<&std::path::Path>) -> String {
+    stage_instructions_with(kind, repos, false, run_dir)
+}
+
+/// W1: [`stage_instructions_in`] with the run's repos as
+/// [`workspace_repos`](crate::workspace_repos::workspace_repos) built them.
+/// In a workspace (the run's folder is not a git repo), the Planner and
+/// Triage are told that every task or plan names its repo.
+pub fn stage_instructions_for(
+    kind: ResultKind,
+    repos: &crate::workspace_repos::WorkspaceRepos,
+    run_dir: Option<&std::path::Path>,
+) -> String {
+    stage_instructions_with(kind, &repos.repos, repos.workspace, run_dir)
+}
+
+fn stage_instructions_with(
+    kind: ResultKind,
+    repos: &[crate::store::RepoEntry],
+    workspace: bool,
+    run_dir: Option<&std::path::Path>,
+) -> String {
     // R1: Triage names the repos in its own instructions.
     if kind == ResultKind::Round {
-        return super::round::round_instructions(repos);
+        return super::round::round_instructions_in(repos, workspace);
     }
     if kind == ResultKind::Artifact {
         let base = result_instructions(kind);
@@ -1019,6 +1065,18 @@ pub fn stage_instructions_in(kind: ResultKind, repos: &[crate::store::RepoEntry]
         return base;
     }
     let lines: Vec<String> = repos.iter().map(|repo| format!("- `{}`: {}", repo.name, repo.folder)).collect();
+    if workspace {
+        return format!(
+            "{base}\n\n\
+             ### Repos\n\n\
+             This run's folder is a workspace of repos, not a git repo, so there is no home repo. These are its repos:\n\n{}\n\n\
+             Every task that opens a pull request must set `repo` to the name of the repo it is made in (for example `\"repo\": \"{}\"`), \
+             even when the plan has one task; each task gets its own worktree in that repo. A plan with a task that leaves `repo` out is sent back. \
+             A task that builds on one in another repo lists it in `dependsOn` as usual, so the backend's pull request is approved before its clients start.",
+            lines.join("\n"),
+            repos[0].name
+        );
+    }
     format!(
         "{base}\n\n\
          ### Repos\n\n\

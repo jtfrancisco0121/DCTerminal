@@ -432,6 +432,10 @@ pub struct RunRepos {
     pub schema: u32,
     #[serde(default)]
     pub repos: Vec<RunRepo>,
+    /// W1: the run's folder is a workspace of repos, not a git repo, so
+    /// every task names its repo. Left out of the file when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workspace: bool,
 }
 
 /// `prs.json` (`prs-<lane>.json`): what an Implementer reported last.
@@ -680,6 +684,12 @@ impl StageDir {
         read_repos(&self.run_dir).into_iter().map(|repo| repo.name).collect()
     }
 
+    /// W1: the run's folder is a workspace of repos (`repos.json`), so
+    /// every task (and every active plan of a round) names its repo.
+    pub fn in_workspace(&self) -> bool {
+        read_repos_workspace(&self.run_dir)
+    }
+
     /// The run folder this stage belongs to (F1: artifact paths are relative to it).
     pub fn run_dir(&self) -> &Path {
         &self.run_dir
@@ -836,12 +846,14 @@ pub(crate) fn read_stage(stage_dir: &Path) -> Option<(StageInfo, Option<TurnStat
     Some((info, read_json(&stage_dir.join(TURN_FILE))))
 }
 
-/// The app's side of `repos.json`: Settings › Repos now.
-pub(crate) fn write_repos(run_dir: &Path, repos: &[RunRepo]) -> io::Result<()> {
+/// The app's side of `repos.json`: Settings › Repos now (W1: merged with
+/// the repos of a workspace folder, and whether it is one).
+pub(crate) fn write_repos(run_dir: &Path, repos: &[RunRepo], workspace: bool) -> io::Result<()> {
     std::fs::create_dir_all(run_dir)?;
     let file = RunRepos {
         schema: SCHEMA,
         repos: repos.to_vec(),
+        workspace,
     };
     if read_json::<RunRepos>(&run_dir.join(REPOS_FILE)).as_ref() == Some(&file) {
         return Ok(());
@@ -852,6 +864,11 @@ pub(crate) fn write_repos(run_dir: &Path, repos: &[RunRepo]) -> io::Result<()> {
 /// The run's `repos.json`; none when it has no such file.
 pub(crate) fn read_repos(run_dir: &Path) -> Vec<RunRepo> {
     read_json::<RunRepos>(&run_dir.join(REPOS_FILE)).map(|file| file.repos).unwrap_or_default()
+}
+
+/// W1: the run's `repos.json` says its folder is a workspace of repos.
+pub(crate) fn read_repos_workspace(run_dir: &Path) -> bool {
+    read_json::<RunRepos>(&run_dir.join(REPOS_FILE)).is_some_and(|file| file.workspace)
 }
 
 /// The run's `tasks.json`, when its Planner handed a plan over.

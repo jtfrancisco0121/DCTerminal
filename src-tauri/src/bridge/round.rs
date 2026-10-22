@@ -170,6 +170,12 @@ pub fn known_tickets(run_dir: &Path) -> Option<Vec<KnownTicket>> {
 /// `tickets`: the run's `tickets.json`, when it has one. `Err` names each
 /// problem, for the deny reason that sends Triage back to fix them.
 pub fn triage_round(plan: &str, repos: &[String], tickets: Option<&[KnownTicket]>) -> Result<Round, Vec<String>> {
+    triage_round_in(plan, repos, tickets, false)
+}
+
+/// W1: [`triage_round`] for a run whose folder may be a workspace of repos
+/// (`repos.json`): there, every active plan lists at least one repo.
+pub fn triage_round_in(plan: &str, repos: &[String], tickets: Option<&[KnownTicket]>, workspace: bool) -> Result<Round, Vec<String>> {
     if plan.trim().is_empty() {
         return Err(vec!["the plan is empty".to_string()]);
     }
@@ -193,7 +199,7 @@ pub fn triage_round(plan: &str, repos: &[String], tickets: Option<&[KnownTicket]
         problems.push("the plan has no ```json block with `round`: end the plan with one (see the example)".to_string());
         return Err(problems);
     };
-    check_round(&value, repos, tickets)
+    check_round(&value, repos, tickets, workspace)
 }
 
 fn plan_id_ok(id: &str) -> bool {
@@ -271,7 +277,7 @@ fn repos_text(repos: &[String]) -> String {
     }
 }
 
-fn check_round(value: &Value, repos: &[String], tickets: Option<&[KnownTicket]>) -> Result<Round, Vec<String>> {
+fn check_round(value: &Value, repos: &[String], tickets: Option<&[KnownTicket]>, workspace: bool) -> Result<Round, Vec<String>> {
     let Some(block) = value.as_object() else {
         return Err(vec!["the round block must be a JSON object with `round`".to_string()]);
     };
@@ -287,7 +293,7 @@ fn check_round(value: &Value, repos: &[String], tickets: Option<&[KnownTicket]>)
         return Err(problems);
     };
     unknown_fields(object, "round.", &ROUND_FIELDS, &mut problems);
-    let plans = check_plans(object.get("plans"), repos, tickets, &mut problems);
+    let plans = check_plans(object.get("plans"), repos, tickets, workspace, &mut problems);
     let waves = check_waves(object.get("waves"), &plans, &mut problems);
     let excluded = check_excluded(object.get("excluded"), tickets, &mut problems);
     if let Some(known) = tickets {
@@ -300,7 +306,13 @@ fn check_round(value: &Value, repos: &[String], tickets: Option<&[KnownTicket]>)
     Ok(Round { plans, waves, merge_order, excluded })
 }
 
-fn check_plans(value: Option<&Value>, repos: &[String], tickets: Option<&[KnownTicket]>, problems: &mut Vec<String>) -> Vec<RoundPlan> {
+fn check_plans(
+    value: Option<&Value>,
+    repos: &[String],
+    tickets: Option<&[KnownTicket]>,
+    workspace: bool,
+    problems: &mut Vec<String>,
+) -> Vec<RoundPlan> {
     let Some(items) = value.and_then(Value::as_array) else {
         problems.push(format!("`round.plans` must be a list of 1 to {MAX_PLANS} plans"));
         return Vec::new();
@@ -366,6 +378,13 @@ fn check_plans(value: Option<&Value>, repos: &[String], tickets: Option<&[KnownT
             ticket_problem(ticket, &format!("{at}.tickets"), tickets, problems);
         }
         let named = strings(plan.get("repos"), &format!("{at}.repos"), MAX_REPOS_PER_PLAN, problems);
+        // W1: a workspace has no home repo, so an active plan names where it goes.
+        if workspace && status == Some(PlanStatus::Active) && named.is_empty() {
+            problems.push(format!(
+                "{name} lists no repos: this run's folder is a workspace of repos, not a git repo, so every active plan lists the repos it touches, from {}",
+                list(&repos.iter().map(String::as_str).collect::<Vec<_>>())
+            ));
+        }
         let mut plan_repos: Vec<String> = Vec::new();
         for repo in named {
             // A deferred plan's fix is outside our repos (E6 example: a
@@ -697,7 +716,20 @@ pub const ROUND_EXAMPLE: &str = "Example: ```json\n{\"round\": {\"plans\": [\
 
 /// What `{{result_instructions}}` becomes on a Triage stage (R1).
 pub fn round_instructions(repos: &[crate::store::RepoEntry]) -> String {
-    let repo_lines = if repos.is_empty() {
+    round_instructions_in(repos, false)
+}
+
+/// W1: [`round_instructions`] for a run whose folder may be a workspace of
+/// repos: there, every active plan lists the repos it touches.
+pub fn round_instructions_in(repos: &[crate::store::RepoEntry], workspace: bool) -> String {
+    let repo_lines = if workspace && !repos.is_empty() {
+        let lines: Vec<String> = repos.iter().map(|repo| format!("- `{}`: {}", repo.name, repo.folder)).collect();
+        format!(
+            "This run's folder is a workspace of repos, not a git repo; a plan's `repos` and `mergeOrder` use these names:\n\n{}\n\n\
+             Every active plan lists at least one of them in `repos`: there is no home repo to build it in.",
+            lines.join("\n")
+        )
+    } else if repos.is_empty() {
         "No repos are set up in DCTerminal (Settings › Repos): leave `repos` empty (`[]`) for a plan in this run's own folder, and leave `mergeOrder` out.".to_string()
     } else {
         let lines: Vec<String> = repos.iter().map(|repo| format!("- `{}`: {}", repo.name, repo.folder)).collect();

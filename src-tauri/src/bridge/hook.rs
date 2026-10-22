@@ -254,7 +254,7 @@ fn on_plan(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
     // A task's `repo` must be one the app wrote into `repos.json` (L1), and
     // a story's `tickets` ones of the run's `tickets.json` when it has one (L3).
     let tickets = dir.ticket_ids();
-    let tasks = match schema::planner_tasks_checked(plan, &dir.repo_names(), tickets.as_deref()) {
+    let tasks = match schema::planner_tasks_in(plan, &dir.repo_names(), tickets.as_deref(), dir.in_workspace()) {
         Ok(tasks) => tasks,
         Err(problems) => return Ok(Some(deny(&schema::plan_rejected_message(&problems)))),
     };
@@ -289,7 +289,7 @@ fn on_round(dir: &StageDir, payload: &Value) -> Result<Option<Value>, String> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let tickets = round::known_tickets(dir.run_folder());
-    let checked = match round::triage_round(plan, &dir.repo_names(), tickets.as_deref()) {
+    let checked = match round::triage_round_in(plan, &dir.repo_names(), tickets.as_deref(), dir.in_workspace()) {
         Ok(checked) => checked,
         Err(problems) => return Ok(Some(deny(&round::round_rejected_message(&problems)))),
     };

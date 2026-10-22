@@ -67,26 +67,27 @@ export function parsePullRequestPlan(list: string): PlannedPr[] {
 /**
  * The lanes a reply's plan fans out into: its pull requests that are not
  * manual steps. A dependency on a manual step or an unknown PR is dropped
- * (the Implementer still reads it in the plan). Fewer than two: no fan-out.
+ * (the Implementer still reads it in the plan). Fewer than `min` (two;
+ * W1: one in a workspace folder): no fan-out.
  */
-export function lanesFromReply(reply: string): PlannedPr[] {
+export function lanesFromReply(reply: string, min = 2): PlannedPr[] {
   const list = contractPullRequestList(reply) ?? "";
-  return lanesOf(parsePullRequestPlan(list));
+  return lanesOf(parsePullRequestPlan(list), min);
 }
 
-/** Pull requests that are not manual steps, keeping only dependencies on each other; fewer than two: none. */
-function lanesOf(planned: PlannedPr[]): PlannedPr[] {
+/** Pull requests that are not manual steps, keeping only dependencies on each other; fewer than `min` (two; W1: one in a workspace): none. */
+function lanesOf(planned: PlannedPr[], min = 2): PlannedPr[] {
   const prs = planned.filter((pr) => !pr.manual);
   const ids = new Set(prs.map((pr) => pr.id));
   const lanes = prs.map((pr) => ({ ...pr, dependsOn: pr.dependsOn.filter((dep) => ids.has(dep)) }));
-  return lanes.length >= 2 ? lanes : [];
+  return lanes.length >= min ? lanes : [];
 }
 
 /**
  * The lanes of the Planner's tasks (`tasks.json`, engine 2), the same way
  * `lanesFromReply` reads a list: read directly, nothing parsed.
  */
-export function lanesFromTasks(tasks: readonly PlannedTask[]): PlannedPr[] {
+export function lanesFromTasks(tasks: readonly PlannedTask[], min = 2): PlannedPr[] {
   return lanesOf(
     tasks.map((task) => ({
       id: task.id,
@@ -96,6 +97,7 @@ export function lanesFromTasks(tasks: readonly PlannedTask[]): PlannedPr[] {
       summary: task.summary,
       ...(task.repo?.trim() ? { repo: task.repo.trim() } : {}),
     })),
+    min,
   );
 }
 

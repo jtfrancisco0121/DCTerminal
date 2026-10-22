@@ -165,6 +165,7 @@ fn eagle_l(tag: &str) -> Fixture {
         panic_on_usage: AtomicBool::new(false),
         hold_usage: Mutex::new(None),
         pr_gate_urls: Mutex::new(Vec::new()),
+        ran_gates: Mutex::new(Vec::new()),
         gate_open: AtomicBool::new(true),
         rate_limits: Mutex::new(HashMap::new()),
         stops: Mutex::new(Vec::new()),

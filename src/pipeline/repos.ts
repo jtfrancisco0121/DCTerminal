@@ -86,18 +86,27 @@ export function laneFolders(
   lanes: readonly PlannedPr[],
   repos: readonly RepoEntry[],
   home: string,
+  /** W1: `home` is a workspace of repos, not a repo: every lane names its repo. */
+  workspace = false,
 ): { folders: LaneFolder[] } | { error: string } {
   const folders: LaneFolder[] = [];
   for (const lane of lanes) {
     const name = lane.repo?.trim();
     if (!name) {
+      if (workspace) {
+        return {
+          error: `${lane.title} names no repo, and ${home} is a folder of repos, not a git repo. Send the plan back so the Planner sets its repo.`,
+        };
+      }
       folders.push({ laneId: lane.id, repo: null, folder: home });
       continue;
     }
     const repo = findRepo(repos, name);
     if (!repo) {
       return {
-        error: `${lane.title} is in the repo "${name}", which is not in Settings › Repos. Add it there, or ask the Planner to leave its repo out.`,
+        error: workspace
+          ? `${lane.title} is in the repo "${name}", which is not in ${home} or Settings › Repos.`
+          : `${lane.title} is in the repo "${name}", which is not in Settings › Repos. Add it there, or ask the Planner to leave its repo out.`,
       };
     }
     folders.push({ laneId: lane.id, repo: repo.name, folder: repo.folder });

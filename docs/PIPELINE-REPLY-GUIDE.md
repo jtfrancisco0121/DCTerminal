@@ -164,7 +164,7 @@ When the reviewed plan's `HANDOFF: Pull requests` lists two or more pull request
 - Its own PR Reviewer and its own rounds. One lane's send-backs don't touch the others.
 - A pull request that `Depends on` another waits as a filled-in draft. Autopilot starts it when the one it builds on is approved. Without autopilot, press **Start** in the overview's **Pull requests** list.
 
-The run is complete when every lane is approved. Fan-out needs the run's folder to be a git repository. Worktrees stay after the run; remove them from the tab menu once their pull requests are merged.
+The run is complete when every lane is approved. Fan-out needs the run's folder to be a git repository, or a workspace: a folder of repos whose pull requests each name their repo (see `docs/pipelines/README.md`). In a workspace, a plan with one pull request fans out too, into one lane in a worktree of its repo. Worktrees stay after the run; remove them from the tab menu once their pull requests are merged.
 
 ## Common mistakes
 
