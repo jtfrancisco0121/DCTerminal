@@ -389,3 +389,39 @@ fn the_last_story_waiting_on_verify_is_verifying_not_at_a_checkpoint() {
     assert_eq!(decide(&def, &mut r, &again).stage_id.as_deref(), Some("pr_reviewer"));
     assert_eq!(r.stories[3].status, StoryStatus::Done);
 }
+
+/// L3 review fix: a verifying story is active again when another stop ends
+/// its verify wait, and `set_stopped` / `set_complete` end a wait too.
+#[test]
+fn every_end_of_a_wait_frees_its_story() {
+    let def = eagle1();
+    let verifying = || {
+        let mut r = run(None);
+        seed(&mut r, None, &plan5(true));
+        for story in r.stories.iter_mut().take(3) {
+            story.status = StoryStatus::Done;
+        }
+        r.stories[3].status = StoryStatus::Active;
+        let report = story_turn(&mut r, None, "s4", "t-4", "passed");
+        r.gates.get_mut("implementer").unwrap().results.push(crate::pipelines::lane_gates::waiting_verify("verify".into(), "Run it."));
+        decide(&def, &mut r, &report);
+        assert_eq!(r.stories[3].status, StoryStatus::Verifying);
+        r
+    };
+    let mut r = verifying();
+    r.set_waiting(StopReason::Stalled, "It stalled.");
+    assert!(r.autopilot.as_ref().unwrap().verify.is_none());
+    assert_eq!(r.stories[3].status, StoryStatus::Active, "another stop frees the verifying story");
+    let mut r = verifying();
+    r.set_stopped(StopReason::CarryOutFailed);
+    assert!(r.autopilot.as_ref().unwrap().verify.is_none());
+    assert_eq!(r.stories[3].status, StoryStatus::Active);
+    // A checkpoint story's wait ends with set_complete too.
+    let mut r = run(None);
+    seed(&mut r, None, &plan5(true));
+    let report = story_turn(&mut r, None, "s1", "t-1", "passed");
+    decide(&def, &mut r, &report);
+    r.set_complete();
+    assert!(r.autopilot.as_ref().unwrap().story_wait.is_none());
+    assert_eq!(r.stories[0].status, StoryStatus::Active);
+}

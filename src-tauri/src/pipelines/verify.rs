@@ -38,7 +38,7 @@ pub(super) fn wait_for_you(
     // Turns held for an earlier verification stay held for this one: your
     // next answer decides them (a stop for anything else releases them).
     let held = std::mem::take(&mut autopilot(run).held);
-    let decision = stop(run, Some(stage), StopReason::Checkpoint, reason);
+    let decision = stop(run, Some(stage), lane, StopReason::Checkpoint, reason);
     autopilot(run).held = held;
     autopilot(run).verify = Some(VerifyWait {
         stage_id: stage.id.clone(),
@@ -213,7 +213,7 @@ pub fn manual_results(
         let reason = format!(
             "{title}the {failed} check failed when you ran the checks, so the verification no longer waits. Send the output back to {stage}, or hand it on yourself."
         );
-        run.stop_for(StopReason::Checkpoint, Some(stage_id), None, reason, None);
+        run.stop_for_in_lane(StopReason::Checkpoint, Some(stage_id), None, lane, reason, None);
     }
     results
 }

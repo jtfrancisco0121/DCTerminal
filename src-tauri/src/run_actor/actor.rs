@@ -11,7 +11,7 @@ use crate::bridge::launch::{
     set_stage_mode, write_run_repos, BridgeFlags, BridgePlan,
 };
 use crate::bridge::{BridgeTag, BridgeTurn, StageMode, TurnOutcome};
-use crate::commands::pipeline::{approve, note, set_lane_status, turn_finished};
+use crate::commands::pipeline::{approve, note, note_in_lane, set_lane_status, turn_finished};
 use crate::pipelines::autopilot::{decide, review_round, stage_key, stop_for_pipeline, Decision, FindingReport, TurnReport};
 use crate::pipelines::recovery::bridge_turn_key;
 use crate::pipelines::{GateResult, PipelineDef, StageDef, StageKind};
@@ -744,9 +744,11 @@ impl<H: Host> Actor<H> {
 
     fn stop_run(&mut self, stage_id: Option<&str>, tab_id: Option<&str>, summary: &str, reason: Option<StopReason>) {
         let reason = reason.unwrap_or(StopReason::CarryOutFailed);
+        // L3: the stop line carries the tab's lane, so the overview reads it.
+        let lane = tab_id.and_then(|id| self.place_tab(id)).and_then(|placed| placed.lane);
         {
             let mut store = lock(self.host.store());
-            if let Err(err) = note(&mut store, &self.run_id, stage_id, summary, None, true, Some(reason)) {
+            if let Err(err) = note_in_lane(&mut store, &self.run_id, stage_id, lane.as_deref(), summary, None, true, Some(reason)) {
                 eprintln!("DCTerminal: run {}: stop not recorded: {err}", self.run_id);
             }
         }
@@ -1247,6 +1249,11 @@ impl<H: Host> Actor<H> {
             store.remember_claude_terminal_session(&tab_id, &session_id)?;
             tab_id
         };
+        // L3: a hand-on just recorded may have skipped the lane's stories;
+        // the Implementer's story.json follows now, even if the launch below fails.
+        if matches!(open.tagging, Tagging::Advance { .. }) {
+            self.sync_lane_story_mark(open.chain.lane.as_deref());
+        }
         let bridge = match &plan {
             Some(plan) => {
                 let program = self

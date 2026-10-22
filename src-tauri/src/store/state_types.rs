@@ -796,9 +796,24 @@ impl PipelineRun {
         why: impl Into<String>,
         detail: Option<String>,
     ) {
+        self.stop_for_in_lane(reason, stage_id, role_id, None, why, detail);
+    }
+
+    /// [`stop_for`](Self::stop_for) for a stop about one lane (L3): its
+    /// `stop` line carries the lane, so the overview reads the lane's stop.
+    pub fn stop_for_in_lane(
+        &mut self,
+        reason: StopReason,
+        stage_id: Option<&str>,
+        role_id: Option<&str>,
+        lane_id: Option<&str>,
+        why: impl Into<String>,
+        detail: Option<String>,
+    ) {
         let why = why.into();
         self.set_waiting(reason, why.clone());
-        self.log_outcome("stop", stage_id, role_id, why, detail, Some(reason.as_str().to_string()));
+        let lane_id = lane_id.filter(|id| self.lane(id).is_some()).map(str::to_string);
+        self.log_in_lane("stop", stage_id, role_id, lane_id.as_deref(), why, detail, Some(reason.as_str().to_string()));
     }
 
     /// Autopilot acts again: `running` while it is on. Clears what it was
