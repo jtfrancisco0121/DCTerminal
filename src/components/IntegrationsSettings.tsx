@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 import {
+  clickupListStatuses,
   clickupStatus,
+  clickupStatusMaps,
+  clickupStatusMapSet,
   clickupTest,
   clickupTokenClear,
   clickupTokenSet,
+  type ClickUpAccountMappings,
   type ClickUpAccountStatus,
+  type ClickUpListMapping,
   type ClickUpWorkspaceOption,
 } from "../bridge";
 import { useConfirm } from "./confirm";
@@ -170,6 +175,138 @@ function ClickUpAccountRow({
   );
 }
 
+/** One list's "verified" mapping, with Change (from the list's real statuses) and Remove (C3). */
+function StatusMapRow({
+  accountId,
+  list,
+  onMaps,
+}: {
+  accountId: string;
+  list: ClickUpListMapping;
+  onMaps: (lists: ClickUpListMapping[]) => void;
+}) {
+  const [options, setOptions] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (work: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await work();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li aria-label={`Verified status for ${list.name}`}>
+      <span>
+        {list.name} → <strong>{list.verified}</strong>
+      </span>{" "}
+      {options ? (
+        <select
+          aria-label={`New verified status for ${list.name}`}
+          value={list.verified ?? ""}
+          disabled={busy}
+          onChange={(event) =>
+            void run(async () => {
+              onMaps(await clickupStatusMapSet(accountId, list.id, event.target.value));
+              setOptions(null);
+            })
+          }
+        >
+          {options.map((status) => (
+            <option key={status} value={status}>
+              {status}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              const read = await clickupListStatuses(accountId, list.id);
+              setOptions(read.statuses.map((s) => s.status));
+            })
+          }
+        >
+          Change
+        </button>
+      )}{" "}
+      <button
+        type="button"
+        className="secondary-button"
+        disabled={busy}
+        onClick={() => void run(async () => onMaps(await clickupStatusMapSet(accountId, list.id, null)))}
+      >
+        Remove
+      </button>
+      {error && <InlineNotice tone="error">{error}</InlineNotice>}
+    </li>
+  );
+}
+
+/**
+ * The "verified" status each ClickUp list maps to, per Claude account (C3).
+ * Lists are mapped next to a run's ClickUp updates; here they can be
+ * changed or removed.
+ */
+function ClickUpStatusMaps() {
+  const [accounts, setAccounts] = useState<ClickUpAccountMappings[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    clickupStatusMaps()
+      .then((next) => {
+        if (!cancelled) setAccounts(next ?? []);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(errorText(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const replace = (accountId: string, lists: ClickUpListMapping[]) =>
+    setAccounts((prev) => (prev ?? []).map((a) => (a.accountId === accountId ? { ...a, lists } : a)));
+
+  const mapped = (accounts ?? []).filter((a) => a.lists.length > 0);
+  return (
+    <div className="settings-subsection" role="group" aria-label="ClickUp verified statuses">
+      <h4>Verified status per list</h4>
+      <p className="hint">
+        When you mark a ticket verified, its ClickUp update proposes this status for its list. Map a
+        list next to a run&apos;s ClickUp updates on the chain overview; change or remove it here.
+      </p>
+      {error && <InlineNotice tone="error">{error}</InlineNotice>}
+      {accounts && mapped.length === 0 && <p className="hint">No lists mapped yet.</p>}
+      {mapped.map((account) => (
+        <div key={account.accountId}>
+          <p>{account.accountName}</p>
+          <ul>
+            {account.lists.map((list) => (
+              <StatusMapRow
+                key={list.id}
+                accountId={account.accountId}
+                list={list}
+                onMaps={(lists) => replace(account.accountId, lists)}
+              />
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Settings › Integrations: ClickUp, one token and workspace per Claude account. */
 export function IntegrationsSettings() {
   const [accounts, setAccounts] = useState<ClickUpAccountStatus[] | null>(null);
@@ -216,6 +353,7 @@ export function IntegrationsSettings() {
           <ClickUpAccountRow key={account.accountId} status={account} onStatus={replace} />
         ))}
       </div>
+      <ClickUpStatusMaps />
     </section>
   );
 }

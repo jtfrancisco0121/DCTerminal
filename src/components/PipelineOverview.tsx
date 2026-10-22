@@ -48,6 +48,7 @@ import {
 } from "../pipeline/overviewModel";
 import { liveTerminalReader, type TerminalReader } from "../pipeline/terminalText";
 import { TicketsSinceIntake } from "./TicketsSinceIntake";
+import { ClickUpUpdates } from "./ClickUpUpdates";
 import { haikuDefaultModeNote } from "../pipeline/haikuMode";
 import { parseReviewVerdict, verdictTone } from "../handoff/verdict";
 import { roleDisplayName } from "../handoff/transitions";
@@ -549,6 +550,12 @@ export function PipelineOverview({
       </section>
 
       {(run.engine ?? 1) >= 2 && <TicketsSinceIntake runId={run.id} />}
+      {(run.engine ?? 1) >= 2 && (
+        <ClickUpUpdates
+          runId={run.id}
+          refreshKey={`${run.status ?? ""}|${run.verifications?.length ?? 0}|${run.updatedAt ?? ""}`}
+        />
+      )}
 
       <div className="pipeline-lanes">
         {stages.map((stage) => {
