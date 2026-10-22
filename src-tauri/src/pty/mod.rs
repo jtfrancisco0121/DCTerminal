@@ -1178,6 +1178,12 @@ pub struct RoleTerminalInput {
     /// launches with the bridge too. Ignored for a tab already in a chain.
     #[serde(default)]
     pub start_chain: Option<String>,
+    /// C2: the ClickUp tickets Start fetched (`clickup_intake_snapshot`).
+    /// A start that begins an engine-2 run writes them into the run folder
+    /// as `tickets.json` and points the first stage at it; any other start
+    /// puts their summary into the request.
+    #[serde(default)]
+    pub intake_id: Option<String>,
 }
 
 /// The chain this start begins (`RoleTerminalInput::start_chain`), when the
@@ -1564,7 +1570,7 @@ pub async fn role_terminal_start(
 #[allow(clippy::too_many_arguments)]
 fn role_terminal_start_blocking(
     app: AppHandle,
-    input: RoleTerminalInput,
+    mut input: RoleTerminalInput,
     on_output: Channel<PtyPacket>,
     roles: State<Mutex<crate::store::RolesStore>>,
     settings: State<Mutex<SettingsStore>>,
@@ -1615,6 +1621,31 @@ fn role_terminal_start_blocking(
         }
         None => None,
     };
+    // C2: tickets from ClickUp, taken for this window's account only. Only
+    // a start that begins an engine-2 run, launching bridged, gets the run
+    // folder's `tickets.json`; the note goes into the form before it merges.
+    let intake = match input.intake_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        Some(intake_id) => {
+            let account = {
+                let mut state = store.lock().map_err(|err| err.to_string())?;
+                state.bind_window(input.window_id.as_deref());
+                state.account_for_tab(input.tab_id.as_deref())
+            };
+            let pending = app.state::<crate::commands::IntakeState>();
+            let snapshot = crate::commands::clickup_intake::take_pending(pending.inner(), intake_id, &account)?;
+            let run_dir = match (&bridge, &starting) {
+                (Some(plan), Some(_)) => crate::bridge::folder::run_dir(&runs_root(&app), &plan.run_id),
+                _ => None,
+            };
+            Some(crate::commands::clickup_intake::intake_for_start(
+                &role,
+                &mut input.values,
+                snapshot,
+                run_dir.as_deref(),
+            ))
+        }
+        None => None,
+    };
     let instructions = bridge
         .as_ref()
         .map(|plan| crate::bridge::schema::result_instructions(plan.kind))
@@ -1652,7 +1683,10 @@ fn role_terminal_start_blocking(
         }
     };
     let recent_folder = cwd.display().to_string();
-    let prompt = handoff_terminal_prompt(&merged.text, input.handoff_plan.as_deref().unwrap_or(""));
+    let mut prompt = handoff_terminal_prompt(&merged.text, input.handoff_plan.as_deref().unwrap_or(""));
+    if let Some(tail) = intake.as_ref().map(|i| i.tail.trim()).filter(|t| !t.is_empty()) {
+        prompt = format!("{prompt}\n\n{tail}");
+    }
     let mode = {
         let settings = settings.lock().map_err(|err| err.to_string())?;
         RunMode::parse(&settings.run_mode_for(&role.id))
@@ -1740,6 +1774,10 @@ fn role_terminal_start_blocking(
             Some(plan) => {
                 let (runs, program) = bridge_paths(&app)?;
                 let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
+                // C2: the run's intake snapshot, before the stage that reads it starts.
+                if let Some(snapshot) = intake.as_ref().and_then(|i| i.write.as_ref()) {
+                    crate::commands::clickup_intake::write_snapshot(&run_dir, snapshot)?;
+                }
                 let flags = crate::bridge::launch::launch_flags(
                     plan.kind,
                     &program,
@@ -2894,6 +2932,27 @@ mod tests {
         let started = label_starting_chain(&events, &store, &other, chain.clone(), None).unwrap().unwrap();
         after_starting_label(&events, &store, &other, Some(&started), || None, || Ok(())).unwrap();
         assert!(store.lock().unwrap().pipeline_run_by_id(&chain.chain_id).is_some());
+    }
+
+    #[test]
+    fn a_start_with_clickup_tickets_writes_tickets_json_into_the_run_folder_before_the_spawn() {
+        let source = include_str!("mod.rs");
+        let body = &source[source.find("fn role_terminal_start_blocking(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let take = body.find("take_pending(").expect("takes the window account's snapshot");
+        let merge = body.find("merge_role_prompt_with(").expect("merges the prompt");
+        assert!(take < merge, "the note is in the form before it merges");
+        let undo = body.find("after_starting_label(").unwrap();
+        let prepare = body.find("prepare_stage(").unwrap();
+        let write = body.find("write_snapshot(").expect("writes tickets.json");
+        let spawn = body.find("open_session_to(").unwrap();
+        assert!(
+            undo < prepare && prepare < write && write < spawn,
+            "written in the run folder, under the undo, before the stage starts"
+        );
+        // Only a bridged start of a new run gets a run folder for it.
+        let run_dir = &body[take..merge];
+        assert!(run_dir.contains("(Some(plan), Some(_))"), "{run_dir}");
     }
 
     #[test]

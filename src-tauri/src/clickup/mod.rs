@@ -16,8 +16,10 @@
 //! - `transport`: one HTTPS GET with a deadline. Tests feed recorded replies.
 //! - `client`: the read calls, with at most 4 in flight and the rate limit.
 //! - `types`: ClickUp's JSON, as far as intake needs it.
+//! - `intake`: tickets in, the run's `tickets.json` out (C2).
 
 pub(crate) mod client;
+pub mod intake;
 pub mod secret;
 pub mod transport;
 pub mod types;
