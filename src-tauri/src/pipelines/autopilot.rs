@@ -559,11 +559,12 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         .filter(|gates| gates.round == round)
         .and_then(|gates| gates.results.iter().find(|r| r.waiting_verify()).cloned());
     if let Some(gate) = waiting {
-        // L3: the last story waits on your verification too.
+        let mut decision = super::verify::wait_for_you(run, &stage, lane, &gate, turn);
+        // L3: the last story waits on your verification too (set after the
+        // stop, which ends any earlier wait and its story's state).
         if let Some(id) = story.as_deref() {
             super::stories::set_status(run, lane, id, crate::store::StoryStatus::Verifying);
         }
-        let mut decision = super::verify::wait_for_you(run, &stage, lane, &gate, turn);
         decision.lane = lane.map(str::to_string);
         return decision;
     }
@@ -749,6 +750,7 @@ fn story_passed(
             // a verify gate (L2): your Continue decides them.
             let held = std::mem::take(&mut autopilot(run).held);
             let mut decision = stop(run, Some(stage), StopReason::Checkpoint, reason);
+            super::stories::set_status(run, lane, id, crate::store::StoryStatus::Waiting);
             autopilot(run).held = held;
             autopilot(run).story_wait = Some(super::stories::wait(&stage.id, lane, id, &checkpoint, turn));
             decision.lane = lane.map(str::to_string);

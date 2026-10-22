@@ -93,10 +93,17 @@ pub fn skip_unfinished(run: &mut PipelineRun, lane: Option<&str>) -> Vec<String>
 /// waits on its checkpoint (that is Continue).
 pub fn resend(run: &mut PipelineRun, lane: Option<&str>, stage_key: &str) -> Result<String, String> {
     let now_story = current(run, lane).ok_or("Every story of this pull request is finished: there is none to send again.")?;
-    if now_story.status == StoryStatus::Waiting {
+    // Only while its wait is there: a story whose wait ended another way
+    // is what Resend picks up.
+    let autopilot = run.autopilot.as_ref();
+    let checkpoint = autopilot
+        .and_then(|a| a.story_wait.as_ref())
+        .is_some_and(|wait| wait.lane.as_deref() == lane && wait.story == now_story.id);
+    if now_story.status == StoryStatus::Waiting && checkpoint {
         return Err(format!("Story {} waits on its checkpoint: press Continue instead.", now_story.id));
     }
-    if now_story.status == StoryStatus::Verifying {
+    let verifying = autopilot.and_then(|a| a.verify.as_ref()).is_some_and(|wait| wait.lane.as_deref() == lane);
+    if now_story.status == StoryStatus::Verifying && verifying {
         return Err(format!("Story {} waits on your verification: mark it verified or failed instead.", now_story.id));
     }
     let id = now_story.id.clone();

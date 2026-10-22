@@ -126,9 +126,27 @@ export function resendableStory(run: PipelineRun, lane: string | null): RunStory
   if (!run.autopilot?.enabled || run.status === "complete" || !run.status) return null;
   if (run.autopilot.verify || run.autopilot.storyWait) return null;
   const now = currentStory(run, lane);
-  if (!now || now.status === "waiting" || now.status === "verifying") return null;
-  if (run.status === "running") return now.status === "failed" ? now : null;
-  return now;
+  if (!now) return null;
+  if (run.status !== "running") return now;
+  // Running (autopilot turned on again after a stop, or a wait that ended
+  // another way): only when nothing is under way for the story, as the run
+  // actor checks it: the story is not being checked, and the lane's newest
+  // step was a stop, not a retry, a next story or a turn being decided.
+  if (now.status !== "active" && now.status !== "failed") return null;
+  return lastLaneStep(run, lane)?.kind === "stop" ? now : null;
+}
+
+/** The newest ledger line of `lane` (null: the run's own), leaving out checks and autopilot on/off. */
+function lastLaneStep(run: PipelineRun, lane: string | null) {
+  const events = run.events ?? [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.kind === "gate") continue;
+    if (event.kind === "autopilot" && (event.summary === "Autopilot on" || event.summary === "Autopilot off")) continue;
+    if ((event.laneId ?? null) !== lane) continue;
+    return event;
+  }
+  return null;
 }
 
 /** The run actor message for Resend story. */

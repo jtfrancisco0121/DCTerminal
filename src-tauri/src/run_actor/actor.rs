@@ -249,8 +249,10 @@ impl<H: Host> Actor<H> {
         if self.decided(&self.decision_key(&turn)) {
             return;
         }
-        // L3: a lane started outside the actor gets its story records here.
+        // L3: a lane started outside the actor gets its story records here,
+        // and its Implementer's story.json follows a hand-on made outside it.
         self.seed_stories(&placed);
+        self.sync_lane_story_mark(placed.lane.as_deref());
         let verdict = bridge_verdict(review(&turn).and_then(|r| r.get("verdict")).and_then(Value::as_str), placed.revise());
         let (enabled, status, round, mine, held, held_by_verify) = {
             let mut store = lock(self.host.store());
@@ -841,7 +843,6 @@ impl<H: Host> Actor<H> {
         let stage_id = decision.stage_id.as_deref().ok_or("the decision names no stage")?;
         let target_index = placed.def.stage_index(stage_id).ok_or("that stage is not in the pipeline")?;
         let target = placed.def.stages[target_index].clone();
-        self.skip_unfinished_stories(placed, &target.title);
         let role = self.host.role(&target.role_id).ok_or_else(|| format!("unknown role {}", target.role_id))?;
         let sources = self.sources(placed, &target, Some(turn), None);
         let built = prompts::stage_values(&role, target.kind() == StageKind::Reviewer, &sources);
@@ -853,7 +854,7 @@ impl<H: Host> Actor<H> {
             round: self.round(placed.lane.as_deref()),
             lane: placed.lane.clone(),
         };
-        self.open_stage(Open {
+        let opened = self.open_stage(Open {
             role_id: target.role_id.clone(),
             chain,
             cwd: placed.tab.cwd.clone(),
@@ -862,7 +863,10 @@ impl<H: Host> Actor<H> {
             values: built.values,
             handoff_plan: built.handoff_plan,
             tagging: Tagging::Advance { text: built.handoff_text },
-        })
+        })?;
+        // L3: recording the hand-on skipped any story left; the bridge learns it.
+        self.sync_story_mark(placed);
+        Ok(opened)
     }
 
     /// The stage a reviewer's round goes back to, the text it gets and the
@@ -1452,37 +1456,19 @@ impl<H: Host> Actor<H> {
         before_last
     }
 
-    /// The pull request goes on to `onto` from `placed`'s Implementer with
-    /// stories not finished (your hand-on): they are marked skipped, with a
-    /// Timeline line, so a later review round is never taken for a story.
-    fn skip_unfinished_stories(&mut self, placed: &Placed, onto: &str) {
-        if placed.stage.kind() != StageKind::Implementer {
-            return;
-        }
-        let lane = placed.lane.as_deref();
-        let skipped = {
-            let mut store = lock(self.host.store());
-            let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
-                return;
-            };
-            let skipped = crate::pipelines::stories::skip_unfinished(run, lane);
-            if skipped.is_empty() {
-                return;
-            }
-            let tag = lane.and_then(|id| run.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
-            let summary = format!(
-                "{tag}Stories {} were not done before the pull request went on to {onto}; they are marked skipped.",
-                skipped.join(", ")
-            );
-            run.log_in_lane("note", Some(&placed.stage.id), None, lane, summary, None, Some("storySkipped".to_string()));
-            if let Err(err) = store.save() {
-                eprintln!("DCTerminal: run {}: skipped stories not saved: {err}", self.run_id);
-            }
-            skipped
+    /// The `story.json` of `lane`'s Implementer from the run's records: a
+    /// hand-on made outside the actor (a Chat tab, a startup form) may have
+    /// skipped its stories, so the stage's next turn reports none.
+    fn sync_lane_story_mark(&self, lane: Option<&str>) {
+        let key = {
+            let store = lock(self.host.store());
+            store
+                .pipeline_run_by_id(&self.run_id)
+                .and_then(|run| crate::pipelines::find(&run.kind))
+                .and_then(|def| implementer_stage(&def).map(|stage| stage_key(&stage.id, lane)))
         };
-        if !skipped.is_empty() {
-            self.sync_story_mark(placed);
-            self.changed();
+        if let Some(key) = key {
+            self.write_story_mark(&key, lane);
         }
     }
 
@@ -1737,14 +1723,9 @@ impl<H: Host> Actor<H> {
             } => {
                 let placed = self.place_tab(&source_tab_id).ok_or("That tab is not on this run.")?;
                 match self.claim_for_you(&placed, if back { "back" } else { "advance" }, force) {
-                    Ok(_) => {
-                        // L3: a hand-on you make yourself skips the stories left.
-                        if !back {
-                            let onto = placed.def.stages.get(placed.index + 1).map(|s| s.title.clone()).unwrap_or_else(|| "the next stage".into());
-                            self.skip_unfinished_stories(&placed, &onto);
-                        }
-                        Ok(UserOutcome::default())
-                    }
+                    // L3: nothing is skipped here; the stories left are skipped
+                    // when the hand-on itself is recorded on the run.
+                    Ok(_) => Ok(UserOutcome::default()),
                     Err(outcome) => Ok(outcome),
                 }
             }
@@ -1893,9 +1874,8 @@ impl<H: Host> Actor<H> {
         });
         match opened {
             Ok(tab_id) => {
-                // L3: your hand-on of an unfinished pull request skips its
-                // other stories, once the next stage has opened.
-                self.skip_unfinished_stories(&placed, &target.title);
+                // L3: recording your hand-on skipped any story left.
+                self.sync_story_mark(&placed);
                 Ok(UserOutcome {
                     tab_id: Some(tab_id),
                     ..UserOutcome::default()

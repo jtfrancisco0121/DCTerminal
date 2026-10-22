@@ -54,12 +54,30 @@ describe("stories (L3)", () => {
     const stopped = run({ status: "waiting", stopReason: "gate_failed", stories: stories(null), autopilot: { enabled: true } });
     expect(resendableStory(stopped, null)?.id).toBe("s2");
     expect(storyResendAction(null)).toEqual({ kind: "storyResend", lane: null });
-    // Running again after a stop: a failed story can be resent; an active one is under way.
-    expect(resendableStory({ ...stopped, status: "running" }, null)?.id).toBe("s2");
-    const active = { ...stopped, status: "running" as const, stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "active" as const } : s)) };
-    expect(resendableStory(active, null)).toBeNull();
+    // Running again after a stop (autopilot on): offered while the lane's newest step is the stop.
+    const stop = { at: "1", kind: "stop", round: 1, summary: "The check failed 3 times in a row.", outcome: "gate_failed" };
+    const on = { at: "2", kind: "autopilot", round: 1, summary: "Autopilot on" };
+    const toggled = { ...stopped, status: "running" as const, events: [stop, { ...on, summary: "Autopilot off" }, on] };
+    expect(resendableStory(toggled, null)?.id).toBe("s2");
+    const active = { ...toggled, stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "active" as const } : s)) };
+    // After a usage stop the story is active.
+    expect(resendableStory(active, null)?.id).toBe("s2");
+    // Not while autopilot itself retries or checks it.
+    const retrying = { ...toggled, events: [...toggled.events, { at: "3", kind: "autopilot", round: 1, summary: "Retry", outcome: "retry" }] };
+    expect(resendableStory(retrying, null)).toBeNull();
+    const checking = { ...toggled, stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "checking" as const } : s)) };
+    expect(resendableStory(checking, null)).toBeNull();
     expect(resendableStory({ ...stopped, autopilot: { enabled: false } }, null)).toBeNull();
-    const verifying = { ...stopped, stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "verifying" as const } : s)) };
+    // Verifying or at a checkpoint only while that wait is there (the actor
+    // puts the story back to active when a wait ends otherwise).
+    const verifyWait = { stageId: "implementer", label: "verify", steps: "x", at: "now" };
+    const verifying = {
+      ...stopped,
+      status: "waiting" as const,
+      stopReason: "checkpoint" as const,
+      stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "verifying" as const } : s)),
+      autopilot: { enabled: true, verify: verifyWait },
+    };
     expect(resendableStory(verifying, null)).toBeNull();
     expect(storyStatusText({ id: "s4", title: "x", status: "verifying" })).toBe("waiting on your verification");
     expect(resendableStory({ ...stopped, autopilot: { enabled: true, verify: { stageId: "implementer", label: "verify", steps: "x", at: "now" } } }, null)).toBeNull();

@@ -2638,13 +2638,62 @@ fn approving_with_unfinished_stories_skips_them_and_clears_the_story_mark() {
 /// L3 review fix: a hand-on you record yourself (to a Chat tab) skips the stories left too.
 #[test]
 fn a_hand_on_you_record_yourself_skips_the_stories_left() {
+    use crate::store::StoryStatus::{Active, Done, Pending, Skipped};
     let mut fx = Fixture::new("story_record");
     let implementer = to_story_wait(&mut fx);
     fx.user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: None, add: None }).unwrap();
+    // MEDIUM 3: a recorded hand-on that then fails and is released skips nothing.
+    fx.user(UserAction::RecordHandoff { source_tab_id: implementer.clone(), back: false, force: false }).unwrap();
+    fx.user(UserAction::ReleaseHandoff { source_tab_id: implementer.clone(), back: false }).unwrap();
+    assert_eq!(story_states(&fx, None), [("s1".to_string(), Done), ("s2".into(), Active), ("s3".into(), Pending)]);
+    // The hand-on itself, recorded on the run (a Chat tab joining the
+    // chain at the PR Reviewer with the hand-off), skips the stories left.
     fx.user(UserAction::RecordHandoff { source_tab_id: implementer, back: false, force: false }).unwrap();
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let role = fx.host.roles.iter().find(|r| r.id == "role_pr_reviewer").unwrap();
+        let chat = store.create_draft_tab(role, &fx.work.path().display().to_string(), true, None).unwrap();
+        store.set_tab_chain(&chat, Some(chain(4, None)), Some("Review the pull request.")).unwrap();
+    }
+    assert_eq!(story_states(&fx, None), [("s1".to_string(), Done), ("s2".into(), Skipped), ("s3".into(), Skipped)]);
     fx.run(|run| {
         let line = run.events.iter().find(|e| e.outcome.as_deref() == Some("storySkipped")).expect("a Timeline line");
-        assert!(line.summary.contains("went on to PR Reviewer"), "{}", line.summary);
+        assert!(line.summary.contains("Stories s2, s3 were not done before the pull request went on to PR Reviewer"), "{}", line.summary);
     });
+    // The bridge hears it at the run's next turn.
+    let planner = fx.planner.clone();
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&planner, "late-1", None, "Late.")));
     assert_eq!(story_mark_of(&fx, "implementer").map(|m| m.current), Some(None));
+}
+
+/// L3 review fix (MEDIUM 1): lane A waits on a checkpoint story; you
+/// approve lane B, which ends A's wait. A's story is active again and
+/// Resend story sends it.
+#[test]
+fn approving_another_lane_ends_a_story_wait_and_resend_picks_the_story_up() {
+    let mut fx = Fixture::new("story_other_lane");
+    let tasks = RunTasks {
+        schema: 1,
+        run_id: RUN.into(),
+        stage_key: "planner".into(),
+        turn: "p-1".into(),
+        at: "now".into(),
+        tasks: vec![story_task("pr1"), crate::bridge::PlannedTask { stories: vec![], ..story_task("pr2") }],
+    };
+    fx.stage_dir(&fx.planner).write_plan("# Plan", &tasks).unwrap();
+    let (impl1, _impl2) = two_lanes_at_the_implementer(&mut fx);
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&impl1, "a-1", Some(story_result("s1", false)), "s1 done.")));
+    fx.finish_gates();
+    fx.run(|run| assert_eq!(run.autopilot.as_ref().unwrap().story_wait.as_ref().and_then(|w| w.lane.as_deref()), Some("pr1")));
+    fx.user(UserAction::Approve { lane: Some("pr2".into()) }).expect("approve PR2");
+    fx.run(|run| {
+        assert!(run.autopilot.as_ref().unwrap().story_wait.is_none(), "the wait ended");
+        assert_eq!(run.stories[0].status, crate::store::StoryStatus::Active, "its story is active again");
+    });
+    let refused = fx.user(UserAction::ContinueStory { lane: Some("pr1".into()), story: "s1".into(), note: None, add: None }).unwrap_err();
+    assert!(refused.contains("not waiting"), "{refused}");
+    fx.user(UserAction::ResendStory { lane: Some("pr1".into()) }).expect("Resend picks it up");
+    let sent = fx.resumes().last().cloned().unwrap();
+    assert_eq!(sent.tab_id, impl1);
+    assert!(sent.prompt.starts_with("Story 1 of 3: R5 instrumentation"), "{}", sent.prompt);
 }

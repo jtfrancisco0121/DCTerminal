@@ -308,8 +308,37 @@ fn resend_makes_the_current_story_active_with_its_retries_started_over() {
     assert_eq!(resend(&mut r, None, "implementer").unwrap(), "s1");
     assert_eq!(r.stories[0].status, StoryStatus::Active);
     assert!(r.autopilot.as_ref().unwrap().gate_retries.is_empty());
+    // Refused only while the story's checkpoint wait is there.
     r.stories[0].status = StoryStatus::Waiting;
-    assert!(resend(&mut r, None, "implementer").unwrap_err().contains("press Continue"));
+    r.autopilot.as_mut().unwrap().story_wait = Some(wait("implementer", None, "s1", "Rerun it", Some("t-1")));
+    assert!(resend(&mut r.clone(), None, "implementer").unwrap_err().contains("press Continue"));
+    r.autopilot.as_mut().unwrap().story_wait = None;
+    assert_eq!(resend(&mut r, None, "implementer").unwrap(), "s1", "a waiting story whose wait ended is resent");
+}
+
+/// Review fix (MEDIUM 1): a wait that ends without your answer (another
+/// stop, your hand-on, Approve elsewhere) puts its story back to active.
+#[test]
+fn a_wait_that_ends_without_your_answer_puts_its_story_back_to_active() {
+    let def = eagle1();
+    let mut r = run(None);
+    seed(&mut r, None, &plan5(true));
+    let report = story_turn(&mut r, None, "s1", "t-1", "passed");
+    decide(&def, &mut r, &report);
+    assert_eq!(r.stories[0].status, StoryStatus::Waiting);
+    r.resume_after_you();
+    assert!(r.autopilot.as_ref().unwrap().story_wait.is_none());
+    assert_eq!(r.stories[0].status, StoryStatus::Active);
+    assert_eq!(mark(&r, None).unwrap().current.as_deref(), Some("s1"));
+    // A different stop while autopilot is off ends a wait too.
+    let mut off = run(None);
+    seed(&mut off, None, &plan5(true));
+    let report = story_turn(&mut off, None, "s1", "t-2", "passed");
+    decide(&def, &mut off, &report);
+    off.set_autopilot_enabled(false);
+    off.set_waiting(StopReason::Stalled, "It stalled.");
+    assert!(off.autopilot.as_ref().unwrap().story_wait.is_none());
+    assert_eq!(off.stories[0].status, StoryStatus::Active);
 }
 
 /// Review fix (root cause): a checkpoint story's wait survives turning

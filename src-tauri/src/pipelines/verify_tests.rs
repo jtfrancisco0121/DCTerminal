@@ -194,6 +194,26 @@ fn any_other_stop_or_turning_autopilot_off_clears_the_wait() {
     assert!(answer(&mut r, "implementer", None, true, None, "now").is_ok(), "and your answer works");
 }
 
+/// L3 review fix (MEDIUM 2): a failed Run checks while autopilot is off
+/// still ends the verify wait, so turning autopilot on does not bring back
+/// a wait that "verified" could then be recorded for.
+#[test]
+fn a_failed_run_checks_with_autopilot_off_ends_the_verify_wait() {
+    let mut r = run(false);
+    gates_waiting(&mut r, None, "verify");
+    decide(&eagle1(), &mut r, &report(None, "tab|bridge|t1"));
+    r.set_autopilot_enabled(false);
+    assert!(r.autopilot.as_ref().unwrap().verify.is_some());
+    let mut failed = passed("npm run check");
+    failed.status = "failed".into();
+    manual_results(&mut r, "implementer", None, 1, vec![failed]);
+    assert!(r.autopilot.as_ref().unwrap().verify.is_none(), "the failed check ended the wait");
+    r.set_autopilot_enabled(true);
+    assert_eq!(r.status, RunStatus::Running);
+    assert!(answer(&mut r, "implementer", None, true, None, "now").is_err(), "nothing to mark verified");
+    assert!(r.verifications.is_empty());
+}
+
 /// Review fix: Run checks by hand during a verify wait keeps the wait
 /// answerable when every check passed, and ends it the normal way when one
 /// failed.

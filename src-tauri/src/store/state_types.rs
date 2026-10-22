@@ -748,18 +748,42 @@ impl PipelineRun {
     /// with autopilot off stays `stopped`: only autopilot waits for you.
     pub fn set_waiting(&mut self, reason: StopReason, why: impl Into<String>) {
         self.release_held();
+        // L2: a stop for anything else is not the verify wait it may replace;
+        // L3: nor the story checkpoint. So even with autopilot off.
+        self.end_answer_waits();
         let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
         if self.status == RunStatus::Complete || !enabled {
             return;
         }
         let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
         autopilot.waiting = Some(why.into());
-        // L2: a stop for anything else is not the verify wait it may replace.
-        autopilot.verify = None;
-        // L3: nor the story checkpoint.
-        autopilot.story_wait = None;
         self.status = RunStatus::Waiting;
         self.stop_reason = Some(reason);
+    }
+
+    /// Ends the waits for your answer (L2's verify gate, L3's checkpoint
+    /// story), however they end. The story each was for, still `verifying`
+    /// or `waiting`, is active again (L3): without its wait no Continue or
+    /// answer can come, and Resend story picks it up instead. Your Continue
+    /// marks its story done first, and an answered verify's story is decided
+    /// right after, so neither is affected.
+    fn end_answer_waits(&mut self) {
+        let Some(autopilot) = self.autopilot.as_mut() else {
+            return;
+        };
+        let verify = autopilot.verify.take();
+        let story_wait = autopilot.story_wait.take();
+        let at = chrono::Utc::now().to_rfc3339();
+        for story in &mut self.stories {
+            let verifying = story.status == StoryStatus::Verifying
+                && verify.as_ref().is_some_and(|wait| wait.lane == story.lane);
+            let waiting = story.status == StoryStatus::Waiting
+                && story_wait.as_ref().is_some_and(|wait| wait.lane == story.lane && wait.story == story.id);
+            if verifying || waiting {
+                story.status = StoryStatus::Active;
+                story.at = Some(at.clone());
+            }
+        }
     }
 
     /// `set_waiting`, plus the ledger's `stop` line, whose `outcome` is the
@@ -786,10 +810,9 @@ impl PipelineRun {
         if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some()) {
             self.release_held();
         }
+        self.end_answer_waits();
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
-            autopilot.verify = None;
-            autopilot.story_wait = None;
         }
         let enabled = self.autopilot.as_ref().is_some_and(|a| a.enabled);
         if enabled && self.status != RunStatus::Complete {
@@ -806,10 +829,9 @@ impl PipelineRun {
         if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some() || a.story_wait.is_some()) {
             self.release_held();
         }
+        self.end_answer_waits();
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
-            autopilot.verify = None;
-            autopilot.story_wait = None;
         }
         if self.status == RunStatus::Waiting {
             self.set_running();
@@ -872,11 +894,10 @@ impl PipelineRun {
     /// complete run stays complete.
     pub fn set_stopped(&mut self, reason: StopReason) {
         self.release_held();
+        self.end_answer_waits();
         let autopilot = self.autopilot.get_or_insert_with(RunAutopilot::default);
         autopilot.enabled = false;
         autopilot.waiting = None;
-        autopilot.verify = None;
-        autopilot.story_wait = None;
         if self.status == RunStatus::Complete {
             return;
         }
@@ -887,10 +908,9 @@ impl PipelineRun {
     /// The run is done. Final.
     pub fn set_complete(&mut self) {
         self.release_held();
+        self.end_answer_waits();
         if let Some(autopilot) = self.autopilot.as_mut() {
             autopilot.waiting = None;
-            autopilot.verify = None;
-            autopilot.story_wait = None;
         }
         self.status = RunStatus::Complete;
         self.stop_reason = None;
