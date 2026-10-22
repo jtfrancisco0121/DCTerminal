@@ -30,9 +30,9 @@ use crate::roles::Role;
 use serde_json::Value;
 use std::collections::HashMap;
 
-const PLAN_KEYS: &[&str] = &["approvedPlan", "plan", "implementationPlan", "candidatePlan", "proposedPlan", "reviewedPlan"];
-const REQUEST_KEYS: &[&str] = &["description", "request", "originalTask", "originalRequest", "task", "requirements"];
-const CONTEXT_KEYS: &[&str] = &["additionalContext", "context", "notes"];
+pub(crate) const PLAN_KEYS: &[&str] = &["approvedPlan", "plan", "implementationPlan", "candidatePlan", "proposedPlan", "reviewedPlan"];
+pub(crate) const REQUEST_KEYS: &[&str] = &["description", "request", "originalTask", "originalRequest", "task", "requirements"];
+pub(crate) const CONTEXT_KEYS: &[&str] = &["additionalContext", "context", "notes"];
 
 /// What a stage's values are built from.
 #[derive(Debug, Clone, Default, PartialEq)]

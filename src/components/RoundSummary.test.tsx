@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge", () => ({
   pipelineRunRound: vi.fn(async () => null),
+  // R2: the round runner under the summary.
+  roundGet: vi.fn(async () => null),
+  roundAction: vi.fn(),
+  pipelineActorMessage: vi.fn(),
+  listenChainRunUpdated: vi.fn(async () => () => {}),
 }));
 
 import { pipelineRunRound } from "../bridge";

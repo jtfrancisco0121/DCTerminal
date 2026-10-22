@@ -24,6 +24,7 @@ mod process_tree;
 pub mod provider;
 mod pty;
 pub mod roles;
+mod rounds;
 mod run_actor;
 mod session_id;
 mod shell_env;
@@ -82,7 +83,7 @@ use commands::{
     pipeline_turn_finished,
     pipeline_run_gates,
     pipeline_set_autopilot, pipeline_promote_plan, spawn_run_recovery,
-    pipeline_set_candidate_plan, pipeline_run_tasks, pipeline_actor_message, pipeline_run_round,
+    pipeline_set_candidate_plan, pipeline_run_tasks, pipeline_actor_message, pipeline_run_round, round_action, round_get,
     autopilot_pending_stops, StartupStops,
     dev_session_cancel, dev_session_live, dev_session_send, dev_session_start, dev_session_stop,
     diagnostics_read_log, diagnostics_set_capture, diagnostics_status, get_app_state,
@@ -268,6 +269,11 @@ pub fn run() {
             app.manage(run_actor::app_host::AppActors::new(std::sync::Arc::new(
                 run_actor::app_host::AppHost::new(app.handle().clone()),
             )));
+            // R2: the round runner, the one owner of every QA round; after a
+            // restart it brings each round up to date with its runs.
+            let rounds = rounds::AppRounds::new(std::sync::Arc::new(run_actor::app_host::AppHost::new(app.handle().clone())));
+            rounds.send(rounds::RoundMsg::Recover);
+            app.manage(rounds);
             bridge::watch::spawn(
                 bridge::launch::runs_root(&data_dir),
                 run_actor::app_host::deliver_inbox(app.handle().clone()),
@@ -351,6 +357,8 @@ pub fn run() {
             pipeline_run_tasks,
             pipeline_actor_message,
             pipeline_run_round,
+            round_get,
+            round_action,
             sync_active_tab_form,
             get_form_recall,
             save_form_draft,
