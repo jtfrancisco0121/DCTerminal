@@ -414,6 +414,10 @@ pub struct LaneInput {
     pub title: String,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// The Settings › Repos name its worktree was made in (L1); `None` for
+    /// the run's own folder.
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 /// Split a run into one lane per pull request at `stage_id` (the
@@ -444,6 +448,9 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
             && lane.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
         if !ok_id || lane.title.trim().is_empty() {
             return Err(format!("Pull request \"{}\" needs an id and a title.", lane.id));
+        }
+        if let Some(repo) = lane.repo.as_deref().filter(|repo| !crate::store::repos_settings::valid_repo_name(repo)) {
+            return Err(format!("{} names the repo \"{repo}\", which is not a repo name.", lane.title));
         }
         if let Some(missing) = lane.depends_on.iter().find(|d| !ids.contains(d.as_str()) || *d == &lane.id) {
             return Err(format!("{} depends on \"{missing}\", which is not another pull request here.", lane.title));
@@ -478,6 +485,7 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
             tab_ids: HashMap::new(),
             handoffs: HashMap::new(),
             verdicts: Vec::new(),
+            repo: lane.repo,
         })
         .collect();
     run.fan_out_stage = Some(stage_id.to_string());
@@ -493,6 +501,25 @@ pub fn fan_out(store: &mut StateStore, run_id: &str, stage_id: &str, lanes: Vec<
     store.save()
 }
 
+/// `lanes` with each `repo` spelt as Settings › Repos spells it; an error
+/// naming a repo that is not there.
+pub fn lanes_in_repos(lanes: Vec<LaneInput>, repos: &[crate::store::RepoEntry]) -> Result<Vec<LaneInput>, String> {
+    lanes
+        .into_iter()
+        .map(|mut lane| {
+            lane.repo = match lane.repo.as_deref().map(str::trim).filter(|repo| !repo.is_empty()) {
+                None => None,
+                Some(name) => Some(
+                    crate::store::repos_settings::find_repo(repos, name)
+                        .map(|repo| repo.name.clone())
+                        .ok_or_else(|| format!("{} is in the repo \"{name}\", which is not in Settings › Repos.", lane.title))?,
+                ),
+            };
+            Ok(lane)
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn pipeline_fan_out(
     app: tauri::AppHandle,
@@ -502,6 +529,15 @@ pub fn pipeline_fan_out(
     store: State<Mutex<StateStore>>,
 ) -> Result<(), String> {
     let run_id = run_id.trim().to_string();
+    // L1: a lane's repo must still be in Settings › Repos (the frontend made
+    // its worktree there a moment ago). Read before the store is locked.
+    let repos = {
+        use tauri::Manager;
+        let settings = app.state::<Mutex<crate::store::SettingsStore>>();
+        let repos = settings.lock().map_err(|e| e.to_string())?.repos().to_vec();
+        repos
+    };
+    let lanes = lanes_in_repos(lanes, &repos)?;
     let mut store = store.lock().map_err(|e| e.to_string())?;
     fan_out(&mut store, &run_id, &stage_id, lanes)?;
     app.chain_run_updated(&run_id);
@@ -665,8 +701,8 @@ mod tests {
 
     fn lanes() -> Vec<LaneInput> {
         vec![
-            LaneInput { id: "pr1".into(), title: "PR1 — API".into(), depends_on: vec![] },
-            LaneInput { id: "pr2".into(), title: "PR2 — UI".into(), depends_on: vec!["pr1".into()] },
+            LaneInput { id: "pr1".into(), title: "PR1 — API".into(), depends_on: vec![], repo: None },
+            LaneInput { id: "pr2".into(), title: "PR2 — UI".into(), depends_on: vec!["pr1".into()], repo: None },
         ]
     }
 
@@ -718,13 +754,54 @@ mod tests {
         let (_dir, mut store) = store("fan_out_bad");
         let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
         store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
-        let one = vec![LaneInput { id: "pr1".into(), title: "PR1".into(), depends_on: vec![] }];
+        let one = vec![LaneInput { id: "pr1".into(), title: "PR1".into(), depends_on: vec![], repo: None }];
         assert!(fan_out(&mut store, "ee_f", "implementer", one).unwrap_err().contains("2 to 8"));
         let mut bad = lanes();
         bad[1].depends_on = vec!["pr9".into()];
         assert!(fan_out(&mut store, "ee_f", "implementer", bad).unwrap_err().contains("pr9"));
         assert!(fan_out(&mut store, "ee_f", "nowhere", lanes()).is_err());
         assert!(store.pipeline_run_by_id("ee_f").unwrap().lanes.is_empty());
+    }
+
+    /// L1: each lane keeps the repo its worktree was made in, spelt as
+    /// Settings › Repos spells it; a repo that is not there is refused.
+    #[test]
+    fn a_fan_out_keeps_each_lanes_repo_and_refuses_one_not_in_settings() {
+        use super::lanes_in_repos;
+        use crate::store::RepoEntry;
+        let repos = [
+            RepoEntry { name: "backend".into(), folder: "/src/backend".into() },
+            RepoEntry { name: "engine".into(), folder: "/src/engine".into() },
+        ];
+        let mut spans = lanes();
+        spans[0].repo = Some("Backend".into());
+        spans[1].repo = Some("engine".into());
+        let spans = lanes_in_repos(spans, &repos).unwrap();
+        let mut home = lanes();
+        home[1].repo = Some("  ".into());
+        assert!(lanes_in_repos(home, &repos).unwrap().iter().all(|l| l.repo.is_none()), "blank is the run's own folder");
+        let mut gone = lanes();
+        gone[1].repo = Some("web".into());
+        let err = lanes_in_repos(gone, &repos).unwrap_err();
+        assert!(err.contains("PR2 — UI is in the repo \"web\", which is not in Settings › Repos"), "{err}");
+
+        let (_dir, mut store) = store("fan_out_repos");
+        let planner = store.create_draft_tab(&role("role_planner"), "/tmp/p", true, None).unwrap();
+        store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
+        let mut odd = spans.clone();
+        odd[0].repo = Some("../x".into());
+        assert!(fan_out(&mut store, "ee_f", "implementer", odd).unwrap_err().contains("not a repo name"));
+        fan_out(&mut store, "ee_f", "implementer", spans).unwrap();
+        let run = store.pipeline_run_by_id("ee_f").unwrap();
+        assert_eq!(run.lane("pr1").unwrap().repo.as_deref(), Some("backend"));
+        assert_eq!(run.lane("pr2").unwrap().repo.as_deref(), Some("engine"));
+        let saved = serde_json::to_value(run.lane("pr2").unwrap()).unwrap();
+        assert_eq!(saved["repo"], "engine");
+        // A lane saved before L1 reads with no repo.
+        let mut old = saved.clone();
+        old.as_object_mut().unwrap().remove("repo");
+        let lane: crate::store::RunLane = serde_json::from_value(old).unwrap();
+        assert_eq!(lane.repo, None);
     }
 
     #[test]
@@ -957,8 +1034,8 @@ mod tests {
         store.set_tab_chain(&planner, Some(chain(1, None)), None).unwrap();
         // "PR1: Auth" starts with "PR1: ", so the text alone names the wrong lane.
         let lanes = vec![
-            LaneInput { id: "pr1".into(), title: "PR1".into(), depends_on: vec![] },
-            LaneInput { id: "pr1b".into(), title: "PR1: Auth".into(), depends_on: vec![] },
+            LaneInput { id: "pr1".into(), title: "PR1".into(), depends_on: vec![], repo: None },
+            LaneInput { id: "pr1b".into(), title: "PR1: Auth".into(), depends_on: vec![], repo: None },
         ];
         fan_out(&mut store, "ee_f", "implementer", lanes).unwrap();
         let last_lane = |store: &StateStore| {

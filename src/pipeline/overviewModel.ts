@@ -36,6 +36,15 @@ export function laneStatus(
   return { label: tab.phase, tone: "idle" };
 }
 
+/**
+ * A fanned-out pull request's label: its title, and the repo its worktree
+ * is in when that is not the run's own (L1), e.g. "PR2 — Client · engine".
+ */
+export function laneLabel(lane: { title: string; repo?: string | null }): string {
+  const repo = lane.repo?.trim();
+  return repo ? `${lane.title} · ${repo}` : lane.title;
+}
+
 function isTerminal(tab: TabSummary | undefined): boolean {
   return tab?.kind === "terminal";
 }

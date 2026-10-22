@@ -1571,9 +1571,9 @@ mod eagle_eye_1 {
 mod run_actor {
     use super::*;
     use dcterminal_lib::testing::{
-        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, launch_flags, paste_bytes, prepare_stage, runs_root,
-        ActorMsg, AppStateFile, BridgePlan, BridgeTag, ChainRef, GateDef, GateResult, Host, InboxEvent, PipelineRun,
-        ProgramArgs, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch, StateStore, StopReason,
+        bridged_command, bundled_seed, claude_terminal_args, drain_inbox, fan_out, launch_flags, paste_bytes, prepare_stage,
+        runs_root, write_run_repos, ActorMsg, LaneInput, AppStateFile, BridgePlan, BridgeTag, ChainRef, GateDef, GateResult, Host, InboxEvent, PipelineRun,
+        ProgramArgs, RepoEntry, ResultKind, Role, RunActors, RunMode, RunStatus, StageLaunch, StateStore, StopReason,
         TerminalKind, TerminalLaunch, UserAction, MAIN_WINDOW_ID,
     };
     use serde_json::json;
@@ -1612,6 +1612,8 @@ mod run_actor {
         notices: Mutex<Vec<String>>,
         /// The pull requests each pull-request gate was given.
         pr_gate_urls: Mutex<Vec<Vec<String>>>,
+        /// Settings › Repos (L1).
+        repos: Vec<RepoEntry>,
         _data: TempDir,
     }
 
@@ -1793,6 +1795,9 @@ mod run_actor {
         fn notice(&self, _run_id: &str, title: &str, body: &str) {
             self.notices.lock().unwrap().push(format!("{title}: {body}"));
         }
+        fn repos(&self) -> Vec<RepoEntry> {
+            self.repos.clone()
+        }
     }
 
     impl Drop for FakeHost {
@@ -1971,6 +1976,7 @@ mod run_actor {
             stops: Mutex::new(Vec::new()),
             notices: Mutex::new(Vec::new()),
             pr_gate_urls: Mutex::new(Vec::new()),
+            repos: Vec::new(),
             _data: data,
         });
         let actors = RunActors::new(host.clone());
@@ -2112,5 +2118,343 @@ mod run_actor {
         for urls in &pr_gates {
             assert_eq!(urls, &vec!["https://github.com/acme/app/pull/12".to_string()], "{pr_gates:?}");
         }
+    }
+
+    // ---- L1: lanes across repos -------------------------------------------
+
+    /// `git` in `dir` with a throwaway identity, for the test repos.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main"])
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A git repo `<parent>/<name>` with one commit.
+    fn repo(parent: &TempDir, name: &str) -> PathBuf {
+        let path = parent.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        git(&path, &["init", "-q"]);
+        git(&path, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        path
+    }
+
+    fn canonical(path: impl AsRef<Path>) -> PathBuf {
+        path.as_ref().canonicalize().expect("an existing folder")
+    }
+
+    /// A plan whose backend task comes first and whose engine task builds on it.
+    fn plan_across_repos() -> String {
+        let tasks = json!({ "tasks": [
+            { "id": "pr1", "title": "Session API", "dependsOn": [], "manual": false, "summary": "Add the session endpoint.", "repo": "backend" },
+            { "id": "pr2", "title": "Engine client", "dependsOn": ["pr1"], "manual": false, "summary": "Call the session endpoint.", "repo": "engine" }
+        ] });
+        format!(
+            "# Plan: sessions across repos\n\n## HANDOFF: Plan\n1. Backend endpoint.\n2. Engine client.\n\n```json\n{tasks}\n```\n\n\
+             ## HANDOFF: Open questions\nNone.\n"
+        )
+    }
+
+    fn implemented_in(lane: &str, url: &str) -> Value {
+        json!({ "turns": [{ "steps": [
+            submit(json!({
+                "prs": [{ "url": url, "branch": format!("{RUN}-{lane}"), "title": format!("{lane} change"), "lane": lane }],
+                "summary": format!("{lane} is built."),
+            })),
+            { "reply": format!("Opened {url}") }
+        ] }] })
+    }
+
+    /// L1, end to end on the actor with `fake_claude` terminals: a plan across
+    /// two repos (Settings › Repos `backend` and `engine`) fans out into one
+    /// worktree per lane, each in its own repo. The backend lane runs first;
+    /// the engine lane depends on it and starts only once the backend's pull
+    /// request is approved. Each lane's check runs in its own worktree, and
+    /// its PR Reviewer opens there too.
+    #[test]
+    fn a_plan_across_two_repos_runs_the_backend_lane_then_the_engine_lane() {
+        let data = TempDir::new("actor_l1_data");
+        let home = FakeHome::new("actor_l1");
+        let parent = TempDir::new("actor_l1_repos");
+        let backend = repo(&parent, "backend");
+        let engine = repo(&parent, "engine");
+        let repos = vec![
+            RepoEntry { name: "backend".into(), folder: backend.display().to_string() },
+            RepoEntry { name: "engine".into(), folder: engine.display().to_string() },
+        ];
+        let state = StateStore {
+            path: data.join("state.json"),
+            data: AppStateFile::default(),
+            new_tab_provider: dcterminal_lib::provider::ProviderId::DEFAULT,
+            draft_window: MAIN_WINDOW_ID.to_string(),
+        };
+        let scenarios = HashMap::from([
+            ("role_plan_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([]))])),
+            (
+                "role_implementer".to_string(),
+                VecDeque::from([
+                    // The backend lane's check fails once: its retry resumes it.
+                    implemented_in("pr1", "https://github.com/acme/backend/pull/1"),
+                    // The engine lane, opened by the actor, then its retry.
+                    implemented_in("pr2", "https://github.com/acme/engine/pull/2"),
+                    implemented_in("pr2", "https://github.com/acme/engine/pull/2"),
+                ]),
+            ),
+            ("role_pr_reviewer".to_string(), VecDeque::from([reviewed("APPROVED", json!([])), reviewed("APPROVED", json!([]))])),
+        ]);
+        let host = Arc::new(FakeHost {
+            store: Mutex::new(state),
+            runs: runs_root(data.path()),
+            roles: bundled_seed().expect("roles").roles,
+            home,
+            scenarios: Mutex::new(scenarios),
+            terminals: Mutex::new(HashMap::new()),
+            launches: Mutex::new(Vec::new()),
+            resumes: Mutex::new(Vec::new()),
+            forced: AtomicUsize::new(0),
+            stops: Mutex::new(Vec::new()),
+            notices: Mutex::new(Vec::new()),
+            pr_gate_urls: Mutex::new(Vec::new()),
+            repos: repos.clone(),
+            _data: data,
+        });
+        // Never the real ~/.claude: every terminal gets this test's config folder.
+        assert!(host.home.config.path().starts_with(test_root()), "{}", host.home.config.path().display());
+        let actors = RunActors::new(host.clone());
+
+        // The Planner, as `role_terminal_start` launches it: its run folder
+        // gets Settings › Repos (`repos.json`) so the bridge takes `repo`.
+        let cwd = host.home.cwd.path().display().to_string();
+        let planner = {
+            let mut store = host.store.lock().unwrap();
+            let role = host.roles.iter().find(|r| r.id == "role_planner").unwrap();
+            let tab = store.create_draft_tab(role, &cwd, true, None).unwrap();
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = HashMap::from([
+                ("cwd".to_string(), cwd.clone()),
+                ("taskType".to_string(), "Feature".to_string()),
+                ("title".to_string(), "Sessions".to_string()),
+                ("request".to_string(), "Add sessions to the backend and the engine.".to_string()),
+            ]);
+            let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 1, total: 4, round: 1, lane: None };
+            store.set_tab_chain(&tab, Some(chain), None).unwrap();
+            store.pipeline_run_by_id_mut(RUN).expect("the run").set_autopilot_enabled(true);
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "planner".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, PLANNER_SID).unwrap();
+            store.save().unwrap();
+            tab
+        };
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "planner".into(),
+            role_id: "role_planner".into(),
+            lane: None,
+            stage_key: "planner".into(),
+            kind: ResultKind::Planner,
+            autopilot: true,
+        };
+        let run_dir = prepare_stage(&host.runs, &bridge, &planner).expect("prepare the Planner");
+        write_run_repos(&run_dir, &repos).expect("repos.json");
+        let plan_turn = json!({ "turns": [{ "steps": [
+            { "tool": "ExitPlanMode", "input": { "plan": plan_across_repos() }, "permission": true },
+            { "reply": "The plan spans backend and engine." }
+        ] }] });
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: planner.clone(),
+                role_id: "role_planner".into(),
+                cwd: host.home.cwd.path().to_path_buf(),
+                prompt: "Plan sessions across the repos.".into(),
+                session_id: PLANNER_SID.into(),
+                bridge: Some(launch_flags(ResultKind::Planner, Path::new(DCTERMINAL), &run_dir, RUN, "planner", &planner)),
+            },
+            &plan_turn,
+            false,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut worktrees: HashMap<String, PathBuf> = HashMap::new();
+        let mut engine_seen_waiting = false;
+        loop {
+            drain_inbox(&host.runs, &mut |event| {
+                if let InboxEvent::Turn(turn) = event {
+                    let run_id = turn.run_id.clone();
+                    actors.send(&run_id, ActorMsg::Turn(turn));
+                }
+            });
+            let run = snapshot(&host);
+            // Until the backend lane is approved, the engine lane waits and
+            // nothing has been opened in its worktree.
+            if let (Some(pr1), Some(pr2)) = (run.lane("pr1"), run.lane("pr2")) {
+                if pr1.status != "approved" {
+                    assert_eq!(pr2.status, "waiting", "{}", ledger(&run));
+                    let engine_wt = canonical(&worktrees["pr2"]);
+                    let opened = host.launches.lock().unwrap().iter().any(|l| canonical(&l.cwd) == engine_wt);
+                    assert!(!opened, "the engine lane opened before the backend was approved\n{}", ledger(&run));
+                    engine_seen_waiting = true;
+                }
+            }
+            match (run.status, run.stop_reason) {
+                (RunStatus::Complete, _) => break,
+                (RunStatus::Waiting, Some(StopReason::Checkpoint)) if worktrees.is_empty() => {
+                    worktrees = fan_out_across_repos(&host, &run, &actors, &repos);
+                }
+                (RunStatus::Running, _) | (RunStatus::Waiting, Some(StopReason::Checkpoint)) => {}
+                (status, reason) => panic!(
+                    "the run stopped: {status:?} {reason:?}\nledger:\n{}\nstops: {:?}\n{}",
+                    ledger(&run),
+                    host.stops.lock().unwrap(),
+                    host.screens()
+                ),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the run never completed\nledger:\n{}\n{}\nbridge.log: {}",
+                ledger(&run),
+                host.screens(),
+                std::fs::read_to_string(host.runs.join(RUN).join("bridge.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert!(engine_seen_waiting, "the engine lane was seen waiting on the backend");
+
+        let run = snapshot(&host);
+        let all = ledger(&run);
+        // The bridge took each task's repo from the plan.
+        let tasks = dcterminal_lib::testing::read_run_tasks(&host.runs, RUN).expect("tasks.json");
+        let named: Vec<Option<&str>> = tasks.tasks.iter().map(|t| t.repo.as_deref()).collect();
+        assert_eq!(named, [Some("backend"), Some("engine")]);
+        assert_eq!(run.lane("pr1").unwrap().repo.as_deref(), Some("backend"));
+        assert_eq!(run.lane("pr2").unwrap().repo.as_deref(), Some("engine"));
+
+        // Each worktree lives under its own repo, on the lane's branch.
+        let (backend_wt, engine_wt) = (canonical(&worktrees["pr1"]), canonical(&worktrees["pr2"]));
+        assert!(backend_wt.starts_with(canonical(parent.join("backend-worktrees"))), "{}", backend_wt.display());
+        assert!(engine_wt.starts_with(canonical(parent.join("engine-worktrees"))), "{}", engine_wt.display());
+        assert_eq!(canonical(git(&backend_wt, &["rev-parse", "--git-common-dir"]).replace("/.git", "")), canonical(&backend));
+        assert_eq!(canonical(git(&engine_wt, &["rev-parse", "--git-common-dir"]).replace("/.git", "")), canonical(&engine));
+        assert_eq!(git(&engine_wt, &["branch", "--show-current"]), format!("{RUN}-pr2"));
+
+        // What the actor opened, in order, and where: the Plan Reviewer in the
+        // run's own folder, then each lane's stages in that lane's worktree.
+        let opened: Vec<(String, PathBuf)> =
+            host.launches.lock().unwrap().iter().map(|l| (l.role_id.clone(), canonical(&l.cwd))).collect();
+        let home_dir = canonical(host.home.cwd.path());
+        assert_eq!(
+            opened,
+            [
+                ("role_plan_reviewer".to_string(), home_dir.clone()),
+                ("role_pr_reviewer".to_string(), backend_wt.clone()),
+                ("role_implementer".to_string(), engine_wt.clone()),
+                ("role_pr_reviewer".to_string(), engine_wt.clone()),
+            ],
+            "{all}"
+        );
+        // The engine lane started from the backend's approval.
+        let approved_at = run.events.iter().position(|e| e.outcome.as_deref() == Some("laneDone")).expect("laneDone");
+        assert!(run.events[approved_at].summary.contains("Starting pr2"), "{all}");
+        // Each lane's check ran in its own worktree (the flaky check leaves its mark there), never at home.
+        assert!(backend_wt.join(".check-failed-once").is_file() && engine_wt.join(".check-failed-once").is_file());
+        assert!(!home_dir.join(".check-failed-once").exists());
+        let gates: Vec<&str> = run
+            .events
+            .iter()
+            .filter(|e| e.kind == "gate" && e.summary.contains("npm run check"))
+            .map(|e| e.outcome.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(gates, ["failed", "passed", "failed", "passed"], "{all}");
+        // The engine lane's reviewer is told which repo its lane is in.
+        let engine_review = host.launches.lock().unwrap()[3].prompt.clone();
+        assert!(engine_review.contains("Implement only PR2 (Engine client) in the engine repo"), "{engine_review}");
+        assert_eq!(run.status, RunStatus::Complete);
+        assert!(host.stops.lock().unwrap().iter().all(|s| s.starts_with("Checkpoint")), "{:?}", host.stops.lock().unwrap());
+    }
+
+    /// What Overview › Fan out does (`fanOut.ts`): one worktree per lane in
+    /// the lane's repo, a draft Implementer tab in it filled with the
+    /// hand-off, the lanes recorded with their repos, each tab joined to its
+    /// lane, and the lane with no dependency started (bridged). Returns
+    /// each lane's worktree folder.
+    fn fan_out_across_repos(
+        host: &Arc<FakeHost>,
+        run: &PipelineRun,
+        actors: &RunActors<FakeHost>,
+        repos: &[RepoEntry],
+    ) -> HashMap<String, PathBuf> {
+        let reviewer = run.tab_ids["role_plan_reviewer"].clone();
+        let prefill = actors
+            .ask(
+                RUN,
+                UserAction::Prefill { source_tab_id: reviewer, target_role_id: "role_implementer".into() },
+                Duration::from_secs(30),
+            )
+            .expect("the hand-off form")
+            .prefill
+            .expect("prefilled");
+        let folder = |name: &str| PathBuf::from(&repos.iter().find(|r| r.name == name).unwrap().folder);
+        let role = host.roles.iter().find(|r| r.id == "role_implementer").unwrap().clone();
+        let mut made = Vec::new();
+        for (lane, repo) in [("pr1", "backend"), ("pr2", "engine")] {
+            let wt = dcterminal_lib::worktree::add_worktree(&folder(repo), &format!("{RUN}-{lane}"), true, None).expect("worktree");
+            let mut store = host.store.lock().unwrap();
+            let tab = store.create_worktree_tab(&role, wt.clone()).unwrap();
+            let mut values = prefill.values.clone();
+            values.insert("cwd".into(), wt.path.clone());
+            store.data.tabs.iter_mut().find(|t| t.id == tab).unwrap().answers = values;
+            made.push((lane, repo, tab, PathBuf::from(&wt.path)));
+        }
+        {
+            let mut store = host.store.lock().unwrap();
+            let lanes = vec![
+                LaneInput { id: "pr1".into(), title: "PR1 — Session API".into(), depends_on: vec![], repo: Some("backend".into()) },
+                LaneInput { id: "pr2".into(), title: "PR2 — Engine client".into(), depends_on: vec!["pr1".into()], repo: Some("engine".into()) },
+            ];
+            fan_out(&mut store, RUN, "implementer", lanes).expect("fan out");
+            for (lane, _, tab, _) in &made {
+                let chain = ChainRef { chain_id: RUN.into(), kind: "eagle1".into(), step: 3, total: 4, round: 1, lane: Some(lane.to_string()) };
+                // Joining a lane with the hand-off passes the checkpoint, as your Send does.
+                store.set_tab_chain(tab, Some(chain), Some(&prefill.handoff_text)).unwrap();
+            }
+            store.save().unwrap();
+        }
+        // The backend lane starts at once, as `laneStartTerminal` starts it.
+        let (_, _, tab, wt) = made[0].clone();
+        let bridge = BridgePlan {
+            run_id: RUN.into(),
+            stage_id: "implementer".into(),
+            role_id: "role_implementer".into(),
+            lane: Some("pr1".into()),
+            stage_key: "implementer@pr1".into(),
+            kind: ResultKind::Implementer,
+            autopilot: true,
+        };
+        let session = "8c3f5d21-2b3c-4d4e-9f50-000000000101";
+        {
+            let mut store = host.store.lock().unwrap();
+            store.set_tab_bridge(&tab, Some(BridgeTag { run_id: RUN.into(), stage: "implementer@pr1".into() })).unwrap();
+            store.remember_claude_terminal_session(&tab, session).unwrap();
+            store.save().unwrap();
+        }
+        let run_dir = prepare_stage(&host.runs, &bridge, &tab).expect("prepare the backend lane");
+        write_run_repos(&run_dir, repos).expect("repos.json");
+        host.start(
+            &StageLaunch {
+                run_id: RUN.into(),
+                tab_id: tab.clone(),
+                role_id: "role_implementer".into(),
+                cwd: wt.clone(),
+                prompt: "Implement PR1 in the backend worktree.".into(),
+                session_id: session.into(),
+                bridge: Some(launch_flags(ResultKind::Implementer, Path::new(DCTERMINAL), &run_dir, RUN, "implementer@pr1", &tab)),
+            },
+            &implemented_in("pr1", "https://github.com/acme/backend/pull/1"),
+            false,
+        );
+        made.into_iter().map(|(lane, _, _, wt)| (lane.to_string(), wt)).collect()
     }
 }

@@ -1615,9 +1615,12 @@ fn role_terminal_start_blocking(
         }
         None => None,
     };
+    // Settings › Repos (L1): the Planner's prompt lists them, and the run
+    // folder gets them for the bridge's tasks check.
+    let repos = settings.lock().map_err(|err| err.to_string())?.repos().to_vec();
     let instructions = bridge
         .as_ref()
-        .map(|plan| crate::bridge::schema::result_instructions(plan.kind))
+        .map(|plan| crate::bridge::schema::stage_instructions(plan.kind, &repos))
         .unwrap_or_default();
     let preview = merge_role_prompt_with(&role, &input.values, &instructions);
     if !preview.errors.is_empty() {
@@ -1740,6 +1743,7 @@ fn role_terminal_start_blocking(
             Some(plan) => {
                 let (runs, program) = bridge_paths(&app)?;
                 let run_dir = crate::bridge::launch::prepare_stage(&runs, plan, &tab_id)?;
+                crate::bridge::launch::write_run_repos(&run_dir, &repos)?;
                 let flags = crate::bridge::launch::launch_flags(
                     plan.kind,
                     &program,

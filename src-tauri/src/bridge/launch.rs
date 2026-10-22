@@ -178,6 +178,21 @@ pub fn prepare_stage(runs_root: &Path, plan: &BridgePlan, tab_id: &str) -> Resul
     Ok(run_dir)
 }
 
+/// Write Settings › Repos into the run folder (`repos.json`, L1) as a
+/// stage launches, after [`prepare_stage`]: the bridge checks a Planner
+/// task's `repo` against these names, and it only sees the run folder.
+/// Written at every bridged launch, so a re-plan sees the list as it is now.
+pub fn write_run_repos(run_dir: &Path, repos: &[crate::store::RepoEntry]) -> Result<(), String> {
+    let repos: Vec<folder::RunRepo> = repos
+        .iter()
+        .map(|repo| folder::RunRepo {
+            name: repo.name.clone(),
+            folder: repo.folder.clone(),
+        })
+        .collect();
+    folder::write_repos(run_dir, &repos).map_err(|err| format!("could not write {}: {err}", run_dir.join(folder::REPOS_FILE).display()))
+}
+
 fn bridge_args(mode: &str, run_dir: &Path, run_id: &str, stage_key: &str, tab_id: &str) -> Vec<String> {
     [
         "bridge",

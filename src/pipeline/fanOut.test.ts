@@ -25,6 +25,10 @@ vi.mock("../bridge", () => ({
   })),
   changesList: vi.fn(async () => ({ state: "none" })),
   getPipelineRun: vi.fn(async () => null),
+  getReposSettings: vi.fn(async () => [
+    { name: "backend", folder: "/src/backend" },
+    { name: "engine", folder: "/src/engine" },
+  ]),
   terminalPlanFile: vi.fn(async () => null),
   validateAndPreview: vi.fn(async () => ({ errors: [] })),
   handoffSave: vi.fn(async (input: Record<string, unknown>) => ({ ...input, id: `h-${String(input.chain && (input.chain as { lane?: string }).lane)}` })),
@@ -36,6 +40,8 @@ vi.mock("../bridge", () => ({
 
 import {
   getPipelineRun,
+  getReposSettings,
+  gitRepoInfo,
   handoffAttach,
   handoffGet,
   handoffSave,
@@ -115,6 +121,25 @@ describe("pull-request plan", () => {
     expect(both).toContain("start from branch `ee_1-pr1` and merge in `ee_1-pr4`");
     expect(laneNote(lanes[0], lanes, "ee_1")).not.toContain("builds on");
     expect(laneBranch("ee_17", "pr1")).toBe("ee_17-pr1");
+  });
+
+  it("lanes keep each task's repo, and a lane note names it and a dependency in another repo (L1)", () => {
+    const tasks = [
+      { id: "pr1", title: "Session API", dependsOn: [], manual: false, summary: "The endpoint.", repo: "backend" },
+      { id: "pr2", title: "Engine client", dependsOn: ["pr1"], manual: false, summary: "The client.", repo: "engine" },
+      { id: "pr3", title: "Engine docs", dependsOn: ["pr2"], manual: false, summary: "Docs.", repo: "engine" },
+      { id: "pr4", title: "Notes", dependsOn: [], manual: false, summary: "Notes.", repo: null },
+    ];
+    const lanes = lanesFromTasks(tasks);
+    expect(lanes.map((l) => l.repo)).toEqual(["backend", "engine", "engine", undefined]);
+    expect("repo" in lanes[3]).toBe(false);
+    const client = laneNote(lanes[1], lanes, "ee_1");
+    expect(client).toContain("on branch `ee_1-pr2` of the engine repo.");
+    expect(client).toContain("It builds on PR1 — Session API (in the backend repo, branch `ee_1-pr1`), already approved");
+    expect(client).not.toContain("start from branch");
+    // A dependency in the same repo is still a branch to start from.
+    expect(laneNote(lanes[2], lanes, "ee_1")).toContain("start from branch `ee_1-pr2`");
+    expect(laneNote(lanes[3], lanes, "ee_1")).toContain("on branch `ee_1-pr4`.");
   });
 });
 
@@ -214,6 +239,65 @@ describe("fan out", () => {
       { id: "pr1", title: "PR1 — API", dependsOn: [] },
       { id: "pr2", title: "PR2 — Web", dependsOn: ["pr1"] },
     ]);
+  });
+
+  const acrossRepos = [
+    { id: "pr1", title: "Session API", dependsOn: [], manual: false, summary: "The endpoint.", repo: "backend" },
+    { id: "pr2", title: "Engine client", dependsOn: ["pr1"], manual: false, summary: "The client.", repo: "engine" },
+    { id: "pr3", title: "Docs", dependsOn: ["pr1"], manual: false, summary: "The docs." },
+  ];
+
+  it("a plan across repos makes each lane's worktree in its repo, and the rest in the run's own (L1)", async () => {
+    const startTerminal = vi.fn(async (tabId: string) => tabId);
+    const result = await fanOutRun(
+      {
+        run,
+        stage: pipelineDef("eagle1")!.stages[2],
+        source,
+        sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 },
+        tasks: acrossRepos,
+      },
+      { startTerminal, syncForm: vi.fn(async () => {}), refreshTabs: async () => {}, roles: null },
+    );
+    expect(result).toEqual({ started: ["pr1"], waiting: ["pr2", "pr3"] });
+    expect(vi.mocked(worktreeTabNew).mock.calls.map((c) => [c[0].repoPath, c[0].branch])).toEqual([
+      ["/src/backend", "ee_1-pr1"],
+      ["/src/engine", "ee_1-pr2"],
+      ["/repo", "ee_1-pr3"],
+    ]);
+    expect(vi.mocked(gitRepoInfo).mock.calls.map((c) => c[0])).toEqual(["/src/backend", "/src/engine", "/repo"]);
+    expect(vi.mocked(pipelineFanOut).mock.calls[0][2]).toEqual([
+      { id: "pr1", title: "PR1 — Session API", dependsOn: [], repo: "backend" },
+      { id: "pr2", title: "PR2 — Engine client", dependsOn: ["pr1"], repo: "engine" },
+      { id: "pr3", title: "PR3 — Docs", dependsOn: ["pr1"] },
+    ]);
+  });
+
+  it("a lane whose repo left Settings › Repos stops fan-out before git, naming it (L1)", async () => {
+    vi.mocked(getReposSettings).mockResolvedValueOnce([{ name: "backend", folder: "/src/backend" }]);
+    await expect(
+      fanOutRun(
+        {
+          run,
+          stage: pipelineDef("eagle1")!.stages[2],
+          source,
+          sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 },
+          tasks: acrossRepos,
+        },
+        { startTerminal: vi.fn(), syncForm: vi.fn(), refreshTabs: async () => {}, roles: null },
+      ),
+    ).rejects.toThrow('PR2 — Engine client is in the repo "engine", which is not in Settings › Repos');
+    expect(worktreeTabNew).not.toHaveBeenCalled();
+    expect(pipelineFanOut).not.toHaveBeenCalled();
+  });
+
+  it("a plan without repos never reads Settings › Repos", async () => {
+    await fanOutRun(
+      { run, stage: pipelineDef("eagle1")!.stages[2], source, sourceChain: { chainId: "ee_1", kind: "eagle1", step: 2, total: 4 } },
+      { startTerminal: vi.fn(async (tabId: string) => tabId), syncForm: vi.fn(async () => {}), refreshTabs: async () => {}, roles: null },
+    );
+    expect(getReposSettings).not.toHaveBeenCalled();
+    expect(vi.mocked(worktreeTabNew).mock.calls.every((c) => c[0].repoPath === "/repo")).toBe(true);
   });
 
   it("refuses a plan with one pull request before touching git", async () => {
