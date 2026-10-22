@@ -5,6 +5,7 @@ mod app_state;
 mod attachments;
 pub(crate) mod chain_events;
 pub(crate) mod changes;
+mod clickup;
 mod cursor_cli;
 mod dev_session;
 mod forms;
@@ -50,6 +51,7 @@ pub use dev_session::{
     kill_all_agents, session_agent_logs,
     SessionRegistry,
 };
+pub use clickup::{clickup_status, clickup_test, clickup_token_clear, clickup_token_set};
 pub use forms::{get_form_recall, save_form_draft};
 pub use github::{
     github_claim_notifications, github_feed, github_push_commits, github_save_filters,
