@@ -2684,7 +2684,12 @@ fn approving_another_lane_ends_a_story_wait_and_resend_picks_the_story_up() {
     let (impl1, _impl2) = two_lanes_at_the_implementer(&mut fx);
     fx.actor.handle(ActorMsg::Turn(fx.end_turn(&impl1, "a-1", Some(story_result("s1", false)), "s1 done.")));
     fx.finish_gates();
-    fx.run(|run| assert_eq!(run.autopilot.as_ref().unwrap().story_wait.as_ref().and_then(|w| w.lane.as_deref()), Some("pr1")));
+    fx.run(|run| {
+        assert_eq!(run.autopilot.as_ref().unwrap().story_wait.as_ref().and_then(|w| w.lane.as_deref()), Some("pr1"));
+        // The stop line carries its lane, so the overview offers Resend for it later.
+        let stop = run.events.iter().rev().find(|e| e.kind == "stop").unwrap();
+        assert_eq!(stop.lane_id.as_deref(), Some("pr1"), "{}", stop.summary);
+    });
     fx.user(UserAction::Approve { lane: Some("pr2".into()) }).expect("approve PR2");
     fx.run(|run| {
         assert!(run.autopilot.as_ref().unwrap().story_wait.is_none(), "the wait ended");
@@ -2696,4 +2701,47 @@ fn approving_another_lane_ends_a_story_wait_and_resend_picks_the_story_up() {
     let sent = fx.resumes().last().cloned().unwrap();
     assert_eq!(sent.tab_id, impl1);
     assert!(sent.prompt.starts_with("Story 1 of 3: R5 instrumentation"), "{}", sent.prompt);
+}
+
+/// L3 review fix: a lane's `gate_failed` stop is logged in that lane.
+#[test]
+fn a_lanes_story_gate_failed_stop_is_logged_in_its_lane() {
+    let mut fx = Fixture::new("story_lane_stop");
+    let tasks = RunTasks {
+        schema: 1,
+        run_id: RUN.into(),
+        stage_key: "planner".into(),
+        turn: "p-1".into(),
+        at: "now".into(),
+        tasks: vec![story_task("pr1"), crate::bridge::PlannedTask { stories: vec![], ..story_task("pr2") }],
+    };
+    fx.stage_dir(&fx.planner).write_plan("# Plan", &tasks).unwrap();
+    let (impl1, _impl2) = two_lanes_at_the_implementer(&mut fx);
+    for n in 0..=crate::pipelines::autopilot::MAX_GATE_RETRIES {
+        fx.host.gates.lock().unwrap().push_back(failed_check());
+        fx.actor.handle(ActorMsg::Turn(fx.end_turn(&impl1, &format!("f-{n}"), Some(story_result("s1", false)), "s1.")));
+        fx.finish_gates();
+    }
+    fx.run(|run| {
+        assert_eq!(run.stop_reason, Some(StopReason::GateFailed));
+        let stop = run.events.iter().rev().find(|e| e.kind == "stop").unwrap();
+        assert_eq!((stop.lane_id.as_deref(), stop.outcome.as_deref()), (Some("pr1"), Some("gate_failed")));
+    });
+}
+
+/// L3 review fix: a review round sent back to the Implementer skips no story.
+#[test]
+fn a_loop_back_to_the_implementer_skips_no_story() {
+    use crate::store::StoryStatus::{Active, Done, Pending};
+    let mut fx = Fixture::new("story_loop_back");
+    let implementer = to_story_wait(&mut fx);
+    fx.user(UserAction::ContinueStory { lane: None, story: "s1".into(), note: None, add: None }).unwrap();
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        store
+            .chain_loop_back_in(RUN, None, "role_pr_reviewer", &implementer, Some("REQUEST CHANGES"), Some("Review findings."))
+            .unwrap();
+    }
+    assert_eq!(story_states(&fx, None), [("s1".to_string(), Done), ("s2".into(), Active), ("s3".into(), Pending)]);
+    fx.run(|run| assert!(!run.events.iter().any(|e| e.outcome.as_deref() == Some("storySkipped"))));
 }

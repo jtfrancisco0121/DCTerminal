@@ -154,11 +154,13 @@ pub(super) fn autopilot(run: &mut PipelineRun) -> &mut RunAutopilot {
     run.autopilot.get_or_insert_with(RunAutopilot::default)
 }
 
-pub(super) fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, code: StopReason, reason: String) -> Decision {
-    run.stop_for(
+/// Stop for you on `stage` (in `lane`, whose `stop` line carries it).
+pub(super) fn stop(run: &mut PipelineRun, stage: Option<&StageDef>, lane: Option<&str>, code: StopReason, reason: String) -> Decision {
+    run.stop_for_in_lane(
         code,
         stage.map(|s| s.id.as_str()),
         stage.map(|s| s.role_id.as_str()),
+        lane,
         reason.clone(),
         None,
     );
@@ -180,7 +182,7 @@ pub fn stop_for_pipeline(run: &mut PipelineRun, why: String) -> Decision {
     if run.status == RunStatus::Complete {
         return Decision::new("ignore", "The run is complete.");
     }
-    stop(run, None, StopReason::CarryOutFailed, format!("Autopilot stopped: {why}"))
+    stop(run, None, None, StopReason::CarryOutFailed, format!("Autopilot stopped: {why}"))
 }
 
 fn go(run: &mut PipelineRun, decision: Decision, detail: Option<String>) -> Decision {
@@ -308,7 +310,7 @@ fn advance(
             "Checkpoint before {}: check the work so far, then send it yourself. Autopilot carries on after that.",
             next.title
         );
-        return stop(run, Some(next), StopReason::Checkpoint, reason);
+        return stop(run, Some(next), lane, StopReason::Checkpoint, reason);
     }
     let key = match claim(run, "advance", &def.stages[index], lane, turn) {
         Ok(key) => key,
@@ -337,6 +339,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     let Some(index) = def.stage_index(&report.stage_id) else {
         return stop(
             run,
+            None,
             None,
             StopReason::CarryOutFailed,
             format!("Stage \"{}\" is not in {}.", report.stage_id, def.name),
@@ -403,6 +406,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         return stop(
             run,
             Some(&stage),
+            lane,
             StopReason::UsageLimit,
             format!(
                 "{} hit a Claude usage limit: {}. Carry on yourself once it resets.{resend_hint}",
@@ -416,6 +420,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         return stop(
             run,
             Some(&stage),
+            lane,
             StopReason::UsageLimit,
             format!("Paused: Claude usage is at {used}% (autopilot pauses at {pause}%).{resend_hint}"),
         );
@@ -424,6 +429,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         return stop(
             run,
             Some(&stage),
+            lane,
             StopReason::NoResult,
             format!(
                 "{} ended its turn without reporting a result through submit_result, even after being asked once.",
@@ -436,6 +442,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
         return stop(
             run,
             Some(&stage),
+            lane,
             StopReason::Checkpoint,
             format!(
                 "{} is blocked: {}. Unblock it, then hand the stage on yourself.",
@@ -463,7 +470,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 "{} reported {reported}, but its pull request is on story {} ({}). Press Resend story in the chain overview to send it that story again, or hand the stage on.",
                 stage.title, now.id, now.title
             );
-            return stop(run, Some(&stage), StopReason::NoResult, reason);
+            return stop(run, Some(&stage), lane, StopReason::NoResult, reason);
         }
     }
     let this_round = run.gates.get(&key_of_stage).filter(|gates| gates.round == round);
@@ -482,7 +489,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             "{} finished, but its `{}` check has nothing to run: {} {fix}",
             stage.title, gate.label, gate.summary
         );
-        return stop(run, Some(&stage), StopReason::NoCheckFound, reason);
+        return stop(run, Some(&stage), lane, StopReason::NoCheckFound, reason);
     }
     let failed_gate = run
         .gates
@@ -510,7 +517,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 }
                 None => why,
             };
-            return stop(run, Some(&stage), StopReason::GateFailed, why);
+            return stop(run, Some(&stage), lane, StopReason::GateFailed, why);
         }
         autopilot(run).gate_retries.insert(key_of_stage.clone(), retries + 1);
         // L3: the output goes back for the same story, which says so.
@@ -581,7 +588,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
     let verdict = report.verdict.as_deref().map(normalize_verdict);
     let Some(verdict) = verdict.as_deref().filter(|v| !v.is_empty()) else {
         if stage.loop_back.is_some() {
-            return stop(run, Some(&stage), StopReason::NoVerdict, format!("No verdict could be read from {}'s reply.", stage.title));
+            return stop(run, Some(&stage), lane, StopReason::NoVerdict, format!("No verdict could be read from {}'s reply.", stage.title));
         }
         return advance(def, run, index, &format!("{} finished", stage.title), Vec::new(), Vec::new(), lane, turn);
     };
@@ -628,6 +635,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             return stop(
                 run,
                 Some(&stage),
+                lane,
                 StopReason::BlockingFindings,
                 format!("{} asked for changes, but this stage has no loop-back.", stage.title),
             );
@@ -639,6 +647,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             return stop(
                 run,
                 Some(&stage),
+                lane,
                 StopReason::RoundCap,
                 format!(
                     "Round cap reached ({edge_round} of {cap}): {} still asks for changes.",
@@ -650,6 +659,7 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             return stop(
                 run,
                 Some(&stage),
+                lane,
                 StopReason::CarryOutFailed,
                 format!("Loop-back stage \"{}\" is missing.", back.to),
             );
@@ -695,10 +705,11 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
             blocking.len(),
             threshold.label()
         );
-        run.stop_for(
+        run.stop_for_in_lane(
             StopReason::BlockingFindings,
             Some(&stage.id),
             Some(&stage.role_id),
+            lane,
             reason.clone(),
             Some(blocking.join("\n")),
         );
@@ -749,7 +760,7 @@ fn story_passed(
             // Turns held for an earlier wait stay held for this one, as for
             // a verify gate (L2): your Continue decides them.
             let held = std::mem::take(&mut autopilot(run).held);
-            let mut decision = stop(run, Some(stage), StopReason::Checkpoint, reason);
+            let mut decision = stop(run, Some(stage), lane, StopReason::Checkpoint, reason);
             super::stories::set_status(run, lane, id, crate::store::StoryStatus::Waiting);
             autopilot(run).held = held;
             autopilot(run).story_wait = Some(super::stories::wait(&stage.id, lane, id, &checkpoint, turn));

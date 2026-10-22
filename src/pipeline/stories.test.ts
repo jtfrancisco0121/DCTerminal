@@ -67,6 +67,22 @@ describe("stories (L3)", () => {
     expect(resendableStory(retrying, null)).toBeNull();
     const checking = { ...toggled, stories: stories(null).map((s) => (s.id === "s2" ? { ...s, status: "checking" as const } : s)) };
     expect(resendableStory(checking, null)).toBeNull();
+    // A fanned-out run: the lane's own stop line (laneId) is what counts.
+    const lanes = run({
+      status: "running",
+      autopilot: { enabled: true },
+      lanes: [
+        { id: "pr1", title: "PR1", status: "active", stage: "implementer", round: 1, tabIds: {} },
+        { id: "pr2", title: "PR2", status: "approved", stage: "pr_reviewer", round: 1, tabIds: {} },
+      ],
+      stories: stories("pr1").map((s) => (s.id === "s2" ? { ...s, status: "active" as const } : s)),
+      events: [
+        { ...stop, laneId: "pr1", outcome: "checkpoint" },
+        { at: "2", kind: "note", round: 1, summary: "PR2 approved by you.", laneId: "pr2" },
+      ],
+    });
+    expect(resendableStory(lanes, "pr1")?.id).toBe("s2");
+    expect(resendableStory({ ...lanes, events: [{ ...stop, laneId: null }] }, "pr1")).toBeNull();
     expect(resendableStory({ ...stopped, autopilot: { enabled: false } }, null)).toBeNull();
     // Verifying or at a checkpoint only while that wait is there (the actor
     // puts the story back to active when a wait ends otherwise).

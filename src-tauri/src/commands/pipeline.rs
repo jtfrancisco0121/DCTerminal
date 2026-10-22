@@ -319,6 +319,21 @@ pub fn note(
     stop: bool,
     reason: Option<StopReason>,
 ) -> Result<(), String> {
+    note_in_lane(store, run_id, stage_id, None, summary, detail, stop, reason)
+}
+
+/// [`note`] about one lane (L3): its line carries the lane.
+#[allow(clippy::too_many_arguments)]
+pub fn note_in_lane(
+    store: &mut StateStore,
+    run_id: &str,
+    stage_id: Option<&str>,
+    lane: Option<&str>,
+    summary: &str,
+    detail: Option<String>,
+    stop: bool,
+    reason: Option<StopReason>,
+) -> Result<(), String> {
     let summary: String = summary.trim().chars().take(500).collect();
     if summary.is_empty() {
         return Err("empty note".into());
@@ -326,10 +341,11 @@ pub fn note(
     let run = store
         .pipeline_run_by_id_mut(run_id)
         .ok_or_else(|| format!("unknown pipeline run: {run_id}"))?;
+    let lane = lane.filter(|id| run.lane(id).is_some()).map(str::to_string);
     if stop {
-        run.stop_for(reason.unwrap_or(StopReason::CarryOutFailed), stage_id, None, summary, detail);
+        run.stop_for_in_lane(reason.unwrap_or(StopReason::CarryOutFailed), stage_id, None, lane.as_deref(), summary, detail);
     } else {
-        run.log("note", stage_id, None, summary, detail);
+        run.log_in_lane("note", stage_id, None, lane.as_deref(), summary, detail, None);
     }
     store.save()
 }
