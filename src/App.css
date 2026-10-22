@@ -4326,6 +4326,100 @@ mark.search-hit-current {
   background: var(--danger);
 }
 
+.clickup-intake {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+}
+
+.clickup-intake textarea {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.clickup-intake-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.clickup-intake-priorities {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: var(--text-sm);
+}
+
+.clickup-intake-priorities legend {
+  float: left;
+  margin-right: 0.3rem;
+  color: var(--fg-muted);
+}
+
+.clickup-intake-priorities label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.clickup-intake-problems,
+.clickup-intake-excluded ul,
+.pipeline-intake ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: var(--text-sm);
+}
+
+.clickup-intake-preview {
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.clickup-intake-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.clickup-intake-table th {
+  color: var(--fg-muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.clickup-intake-table td {
+  padding: 0.2rem 0.4rem;
+  border-bottom: 1px solid var(--bg-muted);
+  vertical-align: top;
+}
+
+.clickup-intake-excluded h4 {
+  margin: 0.5rem 0 0.2rem;
+  font-size: var(--text-sm);
+}
+
+.pipeline-intake {
+  margin-bottom: 1rem;
+}
+
+.pipeline-intake p {
+  margin: 0 0 0.3rem;
+}
+
 .eagle-toggle {
   display: inline-flex;
   align-items: center;

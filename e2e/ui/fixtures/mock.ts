@@ -418,6 +418,9 @@ export function installTauriMock(config: MockConfig): void {
     clickup_status: () => [
       { accountId: "default", accountName: "Claude", configured: false, source: "none" },
     ],
+    // C2: the start screen's ClickUp box says to set ClickUp up; runs hold no snapshot.
+    clickup_intake_status: () => ({ accountId: "default", accountName: "Claude", configured: false }),
+    clickup_intake_check: () => null,
     github_push_commits: (a) =>
       config.github.commits[`${a.repo}@${a.head}`] ?? { commits: [], total: 0 },
     github_save_filters: (a) => {

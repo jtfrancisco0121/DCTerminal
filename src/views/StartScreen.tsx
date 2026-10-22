@@ -12,6 +12,8 @@ import {
   type TabSummary,
   type ValidatePreviewResult,
 } from "../bridge";
+import { ClickUpIntake } from "../components/ClickUpIntake";
+import type { IntakeDraft } from "../clickup/intakeModel";
 import { CursorHistoryList } from "../components/CursorHistoryList";
 import { FolderPicker } from "../components/FolderPicker";
 import { errorText } from "../components/InlineNotice";
@@ -92,6 +94,10 @@ export type StartScreenProps = {
   eagleOn: boolean;
   setEagleOn: (on: boolean) => void;
   eagleOnRef: MutableRefObject<boolean>;
+  /** C2: the "Tickets from ClickUp" box, which an Eagle-mode Start reads. */
+  intakeDraftRef: MutableRefObject<IntakeDraft>;
+  /** Opens Settings › Integrations (ClickUp is not set up for this window's account). */
+  openIntegrations: () => void;
   startSession: (forceResend?: boolean, resume?: { resumeStored?: boolean }) => Promise<unknown>;
   startRoleTerminal: () => Promise<unknown>;
   startBlankTerminal: (launch: "shell" | CliLaunch) => Promise<unknown>;
@@ -170,6 +176,8 @@ export function StartScreen({
   eagleOn,
   setEagleOn,
   eagleOnRef,
+  intakeDraftRef,
+  openIntegrations,
   startSession,
   startRoleTerminal,
   startBlankTerminal,
@@ -600,6 +608,14 @@ export function StartScreen({
                 </>
               )}
             </div>
+            {eagleToggle && eagleOn && rememberedSurface(roleId) === "terminal" && (
+              <ClickUpIntake
+                key={activeTabId ?? ""}
+                draftRef={intakeDraftRef}
+                onOpenIntegrations={openIntegrations}
+                disabled={busy}
+              />
+            )}
             {startHint && (
               <p className="hint start-reason" id={startReasonId}>
                 {startHint}
