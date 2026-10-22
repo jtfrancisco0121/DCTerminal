@@ -201,6 +201,22 @@ fn wait_after_429(reply: &Reply, now: i64) -> u64 {
         .unwrap_or(DEFAULT_429_WAIT)
 }
 
+/// ClickUp answers 401 for an id the token cannot see, not only for a bad
+/// token: a missing or foreign task or list comes back as `OAUTH_027` ("Team
+/// not authorized"), a bad token as `OAUTH_025` ("Token invalid"). Seen live on
+/// 2026-10-22. Only the `ECODE` field is read, never the body's text.
+fn not_visible(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("ECODE")
+                .and_then(|code| code.as_str())
+                .map(|code| code == "OAUTH_027")
+        })
+        .unwrap_or(false)
+}
+
 /// A task by ClickUp's own id (`86b1aa001`, the usual case), or by a custom
 /// task id (`QA-128`), which the API only finds with the workspace id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +307,7 @@ impl<'a> ClickUp<'a> {
                     }
                     Err(ClickUpError::RateLimited(wait))
                 }
+                401 | 403 if not_visible(&reply.body) => Err(ClickUpError::NotFound(what)),
                 401 | 403 => Err(ClickUpError::Rejected),
                 404 => Err(ClickUpError::NotFound(what)),
                 500..=599 => Err(ClickUpError::Server(reply.status)),
@@ -624,6 +641,22 @@ pub(crate) mod tests {
             (
                 status(404),
                 "ClickUp has no task with that id, or your token cannot see it.",
+            ),
+            (
+                Ok(Reply {
+                    status: 401,
+                    body: "{\"err\":\"Team not authorized\",\"ECODE\":\"OAUTH_027\"}".into(),
+                    ..Reply::default()
+                }),
+                "ClickUp has no task with that id, or your token cannot see it.",
+            ),
+            (
+                Ok(Reply {
+                    status: 401,
+                    body: "not json".into(),
+                    ..Reply::default()
+                }),
+                "ClickUp rejected the token. Check it under Settings › Integrations.",
             ),
             (
                 status(502),
