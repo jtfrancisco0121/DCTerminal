@@ -3011,6 +3011,9 @@ mod run_actor {
         // Each lane's PR Reviewer opened in its own worktree.
         let reviewers = host.launches.lock().unwrap().iter().filter(|l| l.role_id == "role_pr_reviewer").count();
         assert_eq!(reviewers, 2, "{all}");
+        // Nothing is left held, and no turn was handed to you.
+        assert!(run.autopilot.as_ref().unwrap().held.is_empty(), "{:?}", run.autopilot);
+        assert!(run.events.iter().all(|e| !e.summary.ends_with("Hand it on yourself.")), "{all}");
         assert_eq!(run.status, RunStatus::Complete);
     }
 

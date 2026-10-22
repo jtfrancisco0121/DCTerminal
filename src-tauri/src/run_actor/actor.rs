@@ -293,7 +293,18 @@ impl<H: Host> Actor<H> {
         // L2: the same while the run waits on your verification (another
         // lane's): your answer decides this turn too, checks first.
         if held_by_verify {
-            self.hold_for_verify(&placed, &turn);
+            if self.hold_for_verify(&placed, &turn) {
+                return;
+            }
+            // The wait ended meanwhile: take the turn up as the run stands now.
+            let (status, round) = {
+                let store = lock(self.host.store());
+                match store.pipeline_run_by_id(&self.run_id) {
+                    Some(run) => (run.status, run.round_for(placed.lane.as_deref())),
+                    None => return,
+                }
+            };
+            self.take_up(&placed, turn, round, status);
             return;
         }
         self.take_up(&placed, turn, round, status);
@@ -302,10 +313,19 @@ impl<H: Host> Actor<H> {
     /// Hold `turn` for your verify answer (L2): kept on the run
     /// (`autopilot.held`) with a Timeline line, so it is decided after a
     /// successful answer, or told to you as yours if the wait ends otherwise.
-    fn hold_for_verify(&mut self, placed: &Placed, turn: &BridgeTurn) {
+    /// False, with nothing held, when the wait has ended meanwhile (a
+    /// command such as Run checks or Autopilot off changed the run outside
+    /// the actor): the caller then takes the turn up as usual.
+    fn hold_for_verify(&mut self, placed: &Placed, turn: &BridgeTurn) -> bool {
         {
             let mut store = lock(self.host.store());
-            if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+            let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) else {
+                return false;
+            };
+            if !holds_for_verify(&placed.def, run, &placed.tab.id) {
+                return false;
+            }
+            {
                 run.hold_turn(crate::store::HeldTurn {
                     turn: bridge_turn_key(&turn.tab_id, &turn.turn),
                     tab_id: placed.tab.id.clone(),
@@ -319,6 +339,7 @@ impl<H: Host> Actor<H> {
             }
         }
         self.note(Some(&placed.stage.id), &held_for_verify(placed), false);
+        true
     }
 
     /// The key `turn` is decided under (L2): its own, or its `#verify` key
@@ -464,8 +485,7 @@ impl<H: Host> Actor<H> {
                 .pipeline_run_by_id(&self.run_id)
                 .is_some_and(|run| holds_for_verify(&placed.def, run, &placed.tab.id))
         };
-        if held_by_verify {
-            self.hold_for_verify(&placed, &turn);
+        if held_by_verify && self.hold_for_verify(&placed, &turn) {
             return;
         }
         // The checks take a while: a turn started since is the stage's result now.
@@ -1654,10 +1674,20 @@ impl<H: Host> Actor<H> {
                 match store.pipeline_run_by_id_mut(&self.run_id) {
                     Some(run) if run.status == RunStatus::Running => true,
                     Some(run) => {
-                        for turn in std::iter::once(next.clone()).chain(held.drain(..)) {
+                        // A decision opened a new verify wait: the turns it can
+                        // hold stay held for that answer; the rest are yours.
+                        let def = crate::pipelines::find(&run.kind);
+                        let (keep, release): (Vec<_>, Vec<_>) = std::iter::once(next.clone())
+                            .chain(held.drain(..))
+                            .partition(|turn| def.as_ref().is_some_and(|def| holds_for_verify(def, run, &turn.tab_id)));
+                        let kept = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
+                        for turn in release {
                             run.hold_turn(turn);
                         }
-                        run.release_held();
+                        run.release_held_because(crate::store::HeldEnd::Stopped);
+                        for turn in kept.into_iter().chain(keep) {
+                            run.hold_turn(turn);
+                        }
                         if let Err(err) = store.save() {
                             eprintln!("DCTerminal: run {}: held turns not released: {err}", self.run_id);
                         }
@@ -1677,12 +1707,28 @@ impl<H: Host> Actor<H> {
                 let store = lock(self.host.store());
                 store.tab_by_id(&next.tab_id).and_then(|tab| tab.bridge.clone())
             };
-            // Only the turn that was held: a newer one is taken up on its own.
-            if let Some(turn) = tag
-                .and_then(|tag| read_stage_turn(&runs, &tag, &next.tab_id))
-                .filter(|turn| bridge_turn_key(&turn.tab_id, &turn.turn) == next.turn)
-            {
-                self.on_turn(turn, true);
+            match tag.and_then(|tag| read_stage_turn(&runs, &tag, &next.tab_id)) {
+                Some(turn) if bridge_turn_key(&turn.tab_id, &turn.turn) == next.turn => self.on_turn(turn, true),
+                // Only the turn that was held: a newer one is taken up on its own.
+                Some(_) => {}
+                // Its tab or turn is gone: tell you, as for any turn left to you.
+                None => {
+                    {
+                        let mut store = lock(self.host.store());
+                        if let Some(run) = store.pipeline_run_by_id_mut(&self.run_id) {
+                            let kept = run.autopilot.as_mut().map(|a| std::mem::take(&mut a.held)).unwrap_or_default();
+                            run.hold_turn(next.clone());
+                            run.release_held_because(crate::store::HeldEnd::Unreadable);
+                            if let Some(autopilot) = run.autopilot.as_mut() {
+                                autopilot.held = kept;
+                            }
+                            if let Err(err) = store.save() {
+                                eprintln!("DCTerminal: run {}: held turn not released: {err}", self.run_id);
+                            }
+                        }
+                    }
+                    self.changed();
+                }
             }
         }
     }

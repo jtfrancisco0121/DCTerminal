@@ -567,6 +567,17 @@ pub struct RunAutopilot {
     pub held: Vec<HeldTurn>,
 }
 
+/// Why held turns are handed to you (L2, `PipelineRun::release_held_because`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldEnd {
+    /// The verify wait ended with no answer.
+    Unanswered,
+    /// You answered, and the run stopped before they were decided.
+    Stopped,
+    /// The held turn's tab or turn could not be read again.
+    Unreadable,
+}
+
 /// A turn held while the run waits on a verification (L2).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -592,19 +603,36 @@ impl PipelineRun {
         }
     }
 
-    /// The verify wait ended with no answer (L2): each held turn gets the
-    /// line a turn finishing while the run waits for you always got, and
-    /// is yours to hand on. The list is cleared.
+    /// The held turns are yours now (L2): each gets the line a turn
+    /// finishing while the run waits for you always got, saying why, and
+    /// the list is cleared. While a verify wait is still set it ended with
+    /// no answer; after your answer, the run stopped before autopilot could
+    /// act on them.
     pub fn release_held(&mut self) {
+        let why = if self.autopilot.as_ref().is_some_and(|a| a.verify.is_some()) {
+            HeldEnd::Unanswered
+        } else {
+            HeldEnd::Stopped
+        };
+        self.release_held_because(why);
+    }
+
+    /// [`release_held`](Self::release_held) with the reason given.
+    pub fn release_held_because(&mut self, why: HeldEnd) {
         let held = match self.autopilot.as_mut() {
             Some(autopilot) => std::mem::take(&mut autopilot.held),
             None => return,
+        };
+        let because = match why {
+            HeldEnd::Unanswered => "which ended without your answer",
+            HeldEnd::Stopped => "and the run stopped before autopilot could act on it",
+            HeldEnd::Unreadable => "and its turn could not be read again",
         };
         for turn in held {
             let lane = turn.lane.as_deref().filter(|id| self.lane(id).is_some());
             let tag = lane.and_then(|id| self.lane(id)).map(|l| format!("{}: ", l.title)).unwrap_or_default();
             let summary = format!(
-                "{tag}{} finished while the run waited on a verification, which ended without your answer. Hand it on yourself.",
+                "{tag}{} finished while the run waited on a verification, {because}. Hand it on yourself.",
                 turn.stage_title
             );
             let lane = lane.map(str::to_string);

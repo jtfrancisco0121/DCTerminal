@@ -35,7 +35,11 @@ pub(super) fn wait_for_you(
         "{title}{} passed its checks, and {} waits for you. Carry out its steps, then mark it verified, or failed with a note, in the chain overview.",
         stage.title, gate.label
     );
+    // Turns held for an earlier verification stay held for this one: your
+    // next answer decides them (a stop for anything else releases them).
+    let held = std::mem::take(&mut autopilot(run).held);
     let decision = stop(run, Some(stage), StopReason::Checkpoint, reason);
+    autopilot(run).held = held;
     autopilot(run).verify = Some(VerifyWait {
         stage_id: stage.id.clone(),
         lane: lane.map(str::to_string),

@@ -2060,3 +2060,104 @@ fn hand_back_decides_an_answered_turn_under_its_verify_key() {
     fx.run(|run| assert!(run.autopilot.as_ref().unwrap().decided.contains(&key), "{:?}", run.events.last()));
     crate::pipelines::unregister_for_test(id);
 }
+
+/// A run of `id` fanned out into lanes pr1 and pr2 at the Implementer, each
+/// with a live bridged Implementer tab. Returns `(impl1, impl2)`.
+fn two_lanes_at_the_implementer(fx: &mut Fixture) -> (String, String) {
+    {
+        let mut store = fx.host.store.lock().unwrap();
+        let lanes = ["pr1", "pr2"]
+            .iter()
+            .map(|id| crate::commands::pipeline::LaneInput { id: id.to_string(), title: id.to_uppercase(), depends_on: vec![], repo: None })
+            .collect();
+        crate::commands::pipeline::fan_out(&mut store, RUN, "implementer", lanes).unwrap();
+        let run = store.pipeline_run_by_id_mut(RUN).unwrap();
+        run.stage = "implementer".into();
+        run.set_running();
+        store.save().unwrap();
+    }
+    let impl1 = fx.bridged_tab("role_implementer", "implementer", 3, Some("pr1"), ResultKind::Implementer);
+    let impl2 = fx.bridged_tab("role_implementer", "implementer", 3, Some("pr2"), ResultKind::Implementer);
+    (impl1, impl2)
+}
+
+fn implemented(fx: &Fixture, tab: &str, turn: &str) -> BridgeTurn {
+    let prs = json!({ "schema": 1, "prs": [{ "url": "https://github.com/acme/app/pull/12", "branch": "b", "title": "t" }], "summary": "s" });
+    fx.end_turn(tab, turn, Some(prs), "Done.")
+}
+
+fn verify_in(lane: &str) -> UserAction {
+    UserAction::Verify { stage_id: "implementer".into(), lane: Some(lane.into()), verified: true, note: None }
+}
+
+/// Review fix (L2, M-a): a stage with two verify gates. Lane pr2's turn is
+/// held while pr1 waits on the first; answering it opens pr1's second
+/// wait, which keeps pr2 held (no "hand it on yourself" line). Answering
+/// the second moves pr1 on and decides pr2, checks first.
+#[test]
+fn a_second_verify_wait_keeps_the_held_turns_for_its_answer() {
+    let id = "verify_twice_l2";
+    let mut def = verify_pipeline(id);
+    def.stages[2].gates.push(crate::pipelines::GateDef::Verify { steps: "Read the Windows log.".into() });
+    crate::pipelines::register_for_test(def);
+    let mut fx = Fixture::with_pipeline("verify_twice", id, Vec::new());
+    let (impl1, impl2) = two_lanes_at_the_implementer(&mut fx);
+    fx.actor.handle(ActorMsg::Turn(implemented(&fx, &impl1, "a-1")));
+    fx.finish_gates();
+    fx.run(|run| assert_eq!(run.autopilot.as_ref().unwrap().verify.as_ref().unwrap().steps, "Run qa128-ml on Windows."));
+    fx.actor.handle(ActorMsg::Turn(implemented(&fx, &impl2, "b-1")));
+    let held_b = format!("{impl2}|bridge|b-1");
+    let told = |run: &crate::store::PipelineRun| run.events.iter().any(|e| e.summary.ends_with("Hand it on yourself."));
+    fx.run(|run| assert_eq!(run.autopilot.as_ref().unwrap().held.iter().map(|h| h.turn.clone()).collect::<Vec<_>>(), std::slice::from_ref(&held_b)));
+
+    fx.user(verify_in("pr1")).unwrap();
+    fx.run(|run| {
+        let autopilot = run.autopilot.as_ref().unwrap();
+        assert_eq!(autopilot.verify.as_ref().map(|w| w.steps.as_str()), Some("Read the Windows log."), "pr1's second wait");
+        assert_eq!(autopilot.held.iter().map(|h| h.turn.clone()).collect::<Vec<_>>(), std::slice::from_ref(&held_b), "pr2 is still held");
+        assert!(!told(run), "{:?}", run.events.last());
+    });
+    assert!(fx.gates_done.try_recv().is_err(), "pr2 is not taken up yet");
+
+    fx.user(verify_in("pr1")).unwrap();
+    assert_eq!(fx.launches().last().unwrap().role_id, "role_pr_reviewer", "pr1 moved on");
+    fx.finish_gates();
+    fx.run(|run| {
+        let autopilot = run.autopilot.as_ref().unwrap();
+        assert!(autopilot.held.is_empty());
+        assert_eq!(autopilot.verify.as_ref().and_then(|w| w.lane.as_deref()), Some("pr2"), "pr2 was decided: its own wait");
+        assert!(!told(run));
+    });
+    crate::pipelines::unregister_for_test(id);
+}
+
+/// Review fix (L2 scoping): only a current stage tab other than the one
+/// waiting is held. A turn of the waiting tab itself, or of a tab that is
+/// not a current stage, is skipped with the old text.
+#[test]
+fn only_other_current_stages_are_held_during_a_verify_wait() {
+    let id = "verify_scope_l2";
+    crate::pipelines::register_for_test(verify_pipeline(id));
+    let mut fx = Fixture::with_pipeline("verify_scope", id, Vec::new());
+    let (impl1, _impl2) = two_lanes_at_the_implementer(&mut fx);
+    fx.actor.handle(ActorMsg::Turn(implemented(&fx, &impl1, "a-1")));
+    fx.finish_gates();
+    fx.run(|run| assert!(run.autopilot.as_ref().unwrap().verify.is_some()));
+    // The waiting tab's own newer turn.
+    fx.actor.handle(ActorMsg::Turn(implemented(&fx, &impl1, "a-2")));
+    // The Planner: not a current stage of the fanned-out run.
+    let planner = fx.planner.clone();
+    fx.actor.handle(ActorMsg::Turn(fx.end_turn(&planner, "p-9", None, "Late.")));
+    fx.run(|run| {
+        assert!(run.autopilot.as_ref().unwrap().held.is_empty(), "{:?}", run.autopilot);
+        let skips: Vec<&str> = run
+            .events
+            .iter()
+            .filter(|e| e.outcome.as_deref() == Some("skip"))
+            .map(|e| e.summary.as_str())
+            .collect();
+        assert_eq!(skips.len(), 2, "{skips:?}");
+        assert!(skips.iter().all(|s| s.contains("finished while the run is waiting for you")), "{skips:?}");
+    });
+    crate::pipelines::unregister_for_test(id);
+}

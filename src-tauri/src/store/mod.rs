@@ -65,7 +65,7 @@ pub(crate) use state_store::{
 pub use claude_migration::{backup_pre_claude_first, migrate_state, CLAUDE_MIGRATION_NOTICE};
 pub use state_types::{
     window_matches, AppStateFile, ChainRef, LayoutState, Migrations, PipelineRun, RoleSnapshot,
-    claim_key, HandoffClaim, HeldTurn, RunAutopilot, RunEvent, RunLane, RunStatus, StageGates, StageHandoff, StopReason,
+    claim_key, HandoffClaim, HeldEnd, HeldTurn, RunAutopilot, RunEvent, RunLane, RunStatus, StageGates, StageHandoff, StopReason,
     ArchivedWindow, TabRecord, TabSessionRef, VerifyRecord, VerifyWait, WindowRecord, MAIN_WINDOW_ID, MAX_DECIDED_TURNS,
 };
 pub use transcript_store::{
