@@ -1566,6 +1566,14 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_tick_key_tells_apart_fields_that_would_run_together() {
+        assert_ne!(tick_key("a", Some("b\0\0")), tick_key("a\0\x01b", None));
+        assert_ne!(tick_key("ab", None), tick_key("a", Some("b")));
+        assert_ne!(tick_key("a", Some("")), tick_key("a", None));
+        assert_eq!(tick_key("a", Some("b")), tick_key("a", Some("b")));
+    }
+
+    #[test]
     fn a_follow_up_keeps_your_skip() {
         let mut rows = Rows::new(t3_build(false));
         rows.tick("t3");
