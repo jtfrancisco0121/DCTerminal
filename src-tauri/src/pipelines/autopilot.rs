@@ -71,6 +71,9 @@ pub struct TurnReport {
     /// L3: the Implementer's `summary`, kept on the story it finished.
     #[serde(default)]
     pub summary: Option<String>,
+    /// F1: an artifact stage's result (status, documents, open questions).
+    #[serde(default)]
+    pub artifact: Option<super::artifacts::ArtifactReport>,
 }
 
 /// Key of per-stage state (gate results, retries): `stage` or `stage@lane`.
@@ -436,6 +439,13 @@ pub fn decide(def: &PipelineDef, run: &mut PipelineRun, report: &TurnReport) -> 
                 stage.title
             ),
         );
+    }
+    // F1: an artifact stage with open questions, or blocked, waits for your
+    // answer; a complete one goes on below like any stage with no loop-back.
+    if let Some(artifact) = report.artifact.as_ref().filter(|_| stage.kind() == super::StageKind::Artifact) {
+        if let Some(decision) = super::artifacts::decide_report(run, &stage, artifact, turn) {
+            return decision;
+        }
     }
     if let Some(why) = report.blocked.as_deref().map(str::trim).filter(|why| !why.is_empty()) {
         // An Implementer that could not finish waits for you, with its reason.

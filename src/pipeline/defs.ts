@@ -31,13 +31,13 @@ export type GateDef =
   | { kind: "verify"; steps: string };
 
 /** What a stage does, whatever its role is called. */
-export type StageKind = "planner" | "reviewer" | "implementer" | "generic";
+export type StageKind = "planner" | "reviewer" | "implementer" | "generic" | "artifact";
 
 /**
  * What a role does on its stage, the reviewer split by what it reviews: a
  * plan (its round goes back to a planner) or the work.
  */
-export type RoleBehaviour = "planner" | "plan_reviewer" | "implementer" | "pr_reviewer" | "generic";
+export type RoleBehaviour = "planner" | "plan_reviewer" | "implementer" | "pr_reviewer" | "generic" | "artifact";
 
 export type StageDef = {
   id: string;
@@ -133,7 +133,7 @@ const BUILT_IN_BEHAVIOUR: Readonly<Record<string, RoleBehaviour>> = {
   role_pr_reviewer: "pr_reviewer",
 };
 
-const BUILT_IN_ROLE: Readonly<Record<Exclude<RoleBehaviour, "generic">, string>> = {
+const BUILT_IN_ROLE: Readonly<Record<Exclude<RoleBehaviour, "generic" | "artifact">, string>> = {
   planner: "role_planner",
   plan_reviewer: "role_plan_reviewer",
   implementer: "role_implementer",
@@ -178,7 +178,7 @@ export function roleBehaviour(roleId: string, chainKind?: string | null): RoleBe
 }
 
 /** The role that does `behaviour` on `kind`'s pipeline (its first such stage), else the built-in role. */
-export function behaviourRole(kind: string | null | undefined, behaviour: Exclude<RoleBehaviour, "generic">): string {
+export function behaviourRole(kind: string | null | undefined, behaviour: Exclude<RoleBehaviour, "generic" | "artifact">): string {
   const def = pipelineDef(kind);
   const stage = def?.stages.find((s) => stageBehaviour(def, s) === behaviour);
   return stage?.roleId ?? BUILT_IN_ROLE[behaviour];

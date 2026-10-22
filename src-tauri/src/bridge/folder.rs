@@ -46,6 +46,10 @@ pub const WRITEBACK_FILE: &str = "writeback.json";
 /// process of its own that sees only the run folder, so the app writes the
 /// names here for the Planner's tasks check; the bridge never writes it.
 pub const REPOS_FILE: &str = "repos.json";
+/// F1: the documents each artifact stage reported last (`submit_result`),
+/// one entry per stage. The bridge writes it; the next stages' prompts list
+/// the documents from it.
+pub const ARTIFACTS_FILE: &str = "artifacts.json";
 /// `bridge.log` stops growing past this; the bridge never needs more to be debugged.
 const MAX_LOG_BYTES: u64 = 256 * 1024;
 
@@ -104,6 +108,10 @@ pub enum ResultKind {
     Planner,
     /// Implementer: its pull requests, a summary and the checks it ran.
     Implementer,
+    /// F1: an artifact stage (Analyst, PM, Architect): the documents it
+    /// wrote into the run folder, `complete`, `partial` with open
+    /// questions, or `blocked` with a reason.
+    Artifact,
 }
 
 /// `stages/<key>/stage.json`, written by the app when the stage's tab starts.
@@ -438,6 +446,37 @@ pub struct RunPrs {
     pub result: Value,
 }
 
+/// One artifact stage's latest result in `artifacts.json` (F1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageArtifacts {
+    pub stage_key: String,
+    pub stage_id: String,
+    pub role_id: String,
+    pub turn: String,
+    pub at: String,
+    /// `complete`, `partial` or `blocked`.
+    pub status: String,
+    /// Paths relative to the run folder, each a file that existed when reported.
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+}
+
+/// `artifacts.json` (F1): every artifact stage's latest documents.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunArtifacts {
+    pub schema: u32,
+    pub run_id: String,
+    #[serde(default)]
+    pub stages: Vec<StageArtifacts>,
+}
+
+/// The run's `artifacts.json` (F1); `None` when no artifact stage reported.
+pub(crate) fn read_artifacts(run_dir: &Path) -> Option<RunArtifacts> {
+    read_json(&run_dir.join(ARTIFACTS_FILE))
+}
+
 /// `needs.json`: the last Needs you a stage posted, so the late
 /// Notification backup is not posted again for the same turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -631,6 +670,25 @@ impl StageDir {
     /// the app wrote no file (a run folder from before L1).
     pub fn repo_names(&self) -> Vec<String> {
         read_repos(&self.run_dir).into_iter().map(|repo| repo.name).collect()
+    }
+
+    /// The run folder this stage belongs to (F1: artifact paths are relative to it).
+    pub fn run_dir(&self) -> &Path {
+        &self.run_dir
+    }
+
+    /// F1: an artifact stage's documents at the run's top (`artifacts.json`),
+    /// replacing that stage's earlier entry.
+    pub fn write_artifacts(&self, entry: StageArtifacts) -> io::Result<()> {
+        let path = self.run_dir.join(ARTIFACTS_FILE);
+        let mut file = read_json::<RunArtifacts>(&path).filter(|file| file.run_id == self.info.run_id).unwrap_or(RunArtifacts {
+            schema: SCHEMA,
+            run_id: self.info.run_id.clone(),
+            stages: Vec::new(),
+        });
+        file.stages.retain(|stage| stage.stage_key != entry.stage_key);
+        file.stages.push(entry);
+        write_json(&path, &file)
     }
 
     /// An Implementer's pull requests at the run's top.

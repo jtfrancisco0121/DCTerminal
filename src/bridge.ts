@@ -424,6 +424,19 @@ export type StoryWait = {
   at: string;
 };
 
+/** F1: the artifact stage a run waits on (`autopilot.artifactWait`): `partial` with open questions, or `blocked` with a reason. */
+export type ArtifactWait = {
+  stageId: string;
+  stageTitle: string;
+  status: "partial" | "blocked";
+  questions?: string[];
+  reason?: string | null;
+  /** The documents it reported so far, relative to the run folder. */
+  artifacts?: string[];
+  turn?: string | null;
+  at: string;
+};
+
 /** L2: the verify gate a run waits on (`autopilot.verify`), while it waits with `checkpoint`. */
 export type VerifyWait = {
   stageId: string;
@@ -541,6 +554,8 @@ export type RunAutopilot = {
   verify?: VerifyWait | null;
   /** L3: the checkpoint story the run waits on, while it does. */
   storyWait?: StoryWait | null;
+  /** F1: the artifact stage whose questions (or block) the run waits on. */
+  artifactWait?: ArtifactWait | null;
 };
 
 export type ClosedTabSummary = {
@@ -1599,7 +1614,9 @@ export type ActorAction =
   /** L3: Continue after a checkpoint story: `note` goes on to the next story; `add` holds stories to add after it, one per line. */
   | { kind: "storyContinue"; lane: string | null; story: string; note?: string | null; add?: string | null }
   /** L3: send the current story again to a run stopped mid-loop. */
-  | { kind: "storyResend"; lane: string | null };
+  | { kind: "storyResend"; lane: string | null }
+  /** F1: answer an artifact stage's open questions (or continue it after a block, `answer` as the note). */
+  | { kind: "artifactAnswer"; stageId: string; answer?: string | null };
 
 /** What a button did on an engine-2 run. */
 export type ActorOutcome = {

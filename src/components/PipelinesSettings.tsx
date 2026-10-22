@@ -177,7 +177,7 @@ export function PipelinesSettings({
         stage hands its HANDOFF sections to the next. A reviewer stage sends its round back until
         it approves; set <code>maxRounds</code> (1 to 20) on its loop-back for a round cap, or leave it
         out for no limit (the default). Checks run after a stage's turn when you press Run checks or when
-        autopilot is on. Autopilot needs every stage to be of kind planner, reviewer or implementer (a copied
+        autopilot is on. Autopilot needs every stage to be of kind planner, reviewer, implementer or artifact (a copied
         role counts like its original) with no parallel reviewers; a run of any other pipeline is
         manual only.
       </p>
@@ -225,7 +225,7 @@ export function PipelinesSettings({
         Fields: <code>id</code>, <code>name</code>, <code>stages</code> (<code>id</code>,{" "}
         <code>roleId</code>, <code>title</code>, optional <code>kind</code>, <code>loopBack</code>,{" "}
         <code>gates</code>, <code>checkpoint</code>). Set <code>kind</code> (<code>planner</code>,{" "}
-        <code>reviewer</code>, <code>implementer</code>, <code>generic</code>) on a stage whose role is a
+        <code>reviewer</code>, <code>implementer</code>, <code>artifact</code>, <code>generic</code>) on a stage whose role is a
         copy, so it works like the original. The full format is in{" "}
         <code>docs/pipelines/README.md</code>.
       </p>
