@@ -524,6 +524,52 @@ fn an_exited_planner_with_no_session_gets_a_new_terminal_with_its_form_and_the_f
     fx.run(|run| assert_eq!(run.tab_ids.get("role_planner"), Some(&planner.tab_id)));
 }
 
+/// A run that started from ClickUp tickets (C2): the app wrote its
+/// `tickets.json` before the first stage launched.
+fn write_tickets(fx: &Fixture) -> String {
+    let path = fx.run_file("tickets.json");
+    std::fs::write(
+        &path,
+        r#"{"schema":1,"source":{"kind":"clickup","accountId":"default","workspaceId":"9012345678","refs":[],"filters":{"priorities":[]}},"fetchedAt":"2026-10-22T09:00:00.000Z","limits":{"descriptionChars":20000,"commentChars":4000,"commentsPerTicket":25,"note":""},"tickets":[],"excluded":[]}"#,
+    )
+    .unwrap();
+    path.display().to_string()
+}
+
+#[test]
+fn a_run_from_clickup_tickets_points_each_stage_at_tickets_json() {
+    let mut fx = Fixture::new("tickets");
+    let tickets = write_tickets(&fx);
+    fx.open_plan_reviewer();
+    let reviewer = &fx.launches()[0];
+    assert!(reviewer.prompt.contains(&format!("- Tickets: {tickets}")), "{}", reviewer.prompt);
+    // A run with no snapshot lists no tickets file.
+    let mut plain = Fixture::new("no_tickets");
+    plain.open_plan_reviewer();
+    assert!(!plain.launches()[0].prompt.contains("tickets.json"));
+}
+
+#[test]
+fn a_first_stage_the_actor_opens_again_is_pointed_at_tickets_json() {
+    let mut fx = Fixture::new("tickets_planner");
+    let tickets = write_tickets(&fx);
+    let reviewer = fx.open_plan_reviewer();
+    fx.host.live.lock().unwrap().remove(&fx.planner.clone());
+    fx.host.store.lock().unwrap().data.tabs.iter_mut().find(|t| t.id == fx.planner).unwrap().sessions.claude_terminal_session_id = None;
+    let turn = fx.end_turn(&reviewer, "r-1", review("CHANGES_REQUIRED", json!([{ "severity": "HIGH", "summary": "Misses QA-129." }])), "");
+    fx.actor.handle(ActorMsg::Turn(turn));
+    let launches = fx.launches();
+    let planner = launches.last().unwrap();
+    assert_eq!(planner.role_id, "role_planner");
+    assert!(
+        planner.prompt.contains(&format!("Tickets from ClickUp (this run's intake snapshot): {tickets}")),
+        "{}",
+        planner.prompt
+    );
+    assert!(planner.prompt.contains("Refresh expired tokens instead of failing."), "its own request stays");
+    assert!(planner.prompt.contains("Misses QA-129."), "and the findings");
+}
+
 /// To the Implementer: the plan is approved and the checkpoint passed by
 /// your Send, which goes through the actor too.
 fn to_implementer(fx: &mut Fixture) -> String {

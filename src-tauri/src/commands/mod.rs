@@ -6,6 +6,7 @@ mod attachments;
 pub(crate) mod chain_events;
 pub(crate) mod changes;
 mod clickup;
+pub(crate) mod clickup_intake;
 mod cursor_cli;
 mod dev_session;
 mod forms;
@@ -52,6 +53,10 @@ pub use dev_session::{
     SessionRegistry,
 };
 pub use clickup::{clickup_status, clickup_test, clickup_token_clear, clickup_token_set};
+pub use clickup_intake::{
+    clickup_intake_check, clickup_intake_preview, clickup_intake_pull, clickup_intake_snapshot,
+    clickup_intake_status, IntakeState,
+};
 pub use forms::{get_form_recall, save_form_draft};
 pub use github::{
     github_claim_notifications, github_feed, github_push_commits, github_save_filters,

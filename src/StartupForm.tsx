@@ -97,6 +97,7 @@ import {
   handoffList,
   ptyWrite,
   roleTerminalStart,
+  clickupIntakeSnapshot,
   scratchSave,
   setTerminalSettings,
   shellTerminalStart,
@@ -175,7 +176,8 @@ import {
 } from "./handoff/map";
 import { runTranscriptExport } from "./export/runTranscriptExport";
 import { LogDrawer } from "./components/LogDrawer";
-import { SettingsPage } from "./components/SettingsPage";
+import { SettingsPage, type SettingsCategory } from "./components/SettingsPage";
+import { EMPTY_INTAKE, intakeStart, type IntakeDraft } from "./clickup/intakeModel";
 import { StatusBar, type StatusMessage, type StatusTone } from "./components/StatusBar";
 import { summarizeSessionActivity } from "./sessionActivity";
 import { chatSessionStatus } from "./chatStatus";
@@ -707,15 +709,23 @@ export function StartupForm({
   const limitAlertedRef = useRef<Set<string>>(new Set());
   const eagleOnRef = useRef(false);
   const [eagleOn, setEagleOn] = useState(false);
-  // The Eagle-Eye tick belongs to the tab it was set on.
+  /** C2: the start screen's "Tickets from ClickUp" box, read by an Eagle-mode Start. */
+  const intakeDraftRef = useRef<IntakeDraft>(EMPTY_INTAKE);
+  // The Eagle-Eye tick, and the tickets pasted with it, belong to the tab they were set on.
   useEffect(() => {
     eagleOnRef.current = false;
     setEagleOn(false);
+    intakeDraftRef.current = EMPTY_INTAKE;
   }, [activeTabId]);
   /** A tab already in a chain keeps it; starting it never begins a new one. */
   const inChain = (tabId: string | null | undefined) =>
     !!tabId && !!savedTabsRef.current.find((tab) => tab.id === tabId)?.chain;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** The Settings category to open at (the start screen's ClickUp link opens Integrations). */
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategory | undefined>(undefined);
+  useEffect(() => {
+    if (!settingsOpen) setSettingsCategory(undefined);
+  }, [settingsOpen]);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [handoffTarget, setHandoffTarget] = useState<HandoffTargetId | null>(null);
   const [handoffFields, setHandoffFields] = useState<HandoffField[] | null>(null);
@@ -2319,8 +2329,21 @@ export function StartupForm({
       // chain. The core makes its run before the launch (engine 2), so the
       // stage launches with the bridge instead of being tagged once it runs.
       const startChain = !options && eagleOnRef.current && !inChain(pendingId) ? eagleStartChain(roleToStart) : null;
+      // C2: tickets pasted with it are read once more, with their comments,
+      // and the core writes them into the new run's folder.
+      const intake = startChain ? intakeStart(intakeDraftRef.current) : null;
+      if (intake?.kind === "blocked") {
+        startLockRef.current = false;
+        setBusy(false);
+        setTerminalError(intake.message);
+        return null;
+      }
       const live = beginLivePty(pendingId);
       try {
+        const intakeId =
+          intake?.kind === "ready"
+            ? (await clickupIntakeSnapshot(intake.refs, intake.filters, intake.ticketIds)).intakeId
+            : null;
         const result = await roleTerminalStart({
           roleId: roleToStart,
           values: form,
@@ -2329,6 +2352,7 @@ export function StartupForm({
           provider: options?.provider ?? null,
           chain: options?.chain ?? null,
           startChain,
+          intakeId,
           ...measuredTerminalSize(),
           onOutput: live.channel,
         });
@@ -2343,6 +2367,7 @@ export function StartupForm({
           return null;
         }
         if (result.tabId !== pendingId) rekeyLivePty(pendingId, result.tabId);
+        if (intakeId) intakeDraftRef.current = EMPTY_INTAKE;
         if (result.usedPromptFile) {
           const fileTab = result.tabId;
           setPromptFileTabs((prev) => (prev.includes(fileTab) ? prev : [...prev, fileTab]));
@@ -5515,9 +5540,17 @@ export function StartupForm({
       }}
       approvalMode={approvalMode}
       onUnsavedChange={onSettingsUnsaved}
+      initialCategory={settingsCategory}
       onClose={() => setSettingsOpen(false)}
     />
   );
+
+  /** C2: ClickUp is not set up for this window's account; Settings opens at Integrations. */
+  const openIntegrations = () =>
+    guardFileEdits(() => {
+      setSettingsCategory("Integrations");
+      setSettingsOpen(true);
+    });
 
   const changesTab = changesTabId ? savedTabs.find((tab) => tab.id === changesTabId) : undefined;
   const activityTab = activityTabId ? savedTabs.find((tab) => tab.id === activityTabId) : undefined;
@@ -6554,6 +6587,8 @@ export function StartupForm({
       eagleOn={eagleOn}
       setEagleOn={setEagleOn}
       eagleOnRef={eagleOnRef}
+      intakeDraftRef={intakeDraftRef}
+      openIntegrations={openIntegrations}
       startSession={startSession}
       startRoleTerminal={startRoleTerminal}
       startBlankTerminal={startBlankTerminal}

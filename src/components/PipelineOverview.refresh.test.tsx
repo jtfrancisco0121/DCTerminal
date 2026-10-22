@@ -9,6 +9,7 @@ const events = vi.hoisted(() => ({
 
 vi.mock("../bridge", () => ({
   getPipelineRun: vi.fn(),
+  clickupIntakeCheck: vi.fn(async () => null),
   listenChainRunUpdated: vi.fn(async (handler: (event: { chainId: string }) => void) => {
     events.handler = handler;
     return events.unlisten;

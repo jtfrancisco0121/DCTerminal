@@ -54,11 +54,11 @@ pub struct ClickUpTestResult {
 }
 
 /// What a command reads from settings for one account, copied out of the lock.
-struct AccountCopy {
-    id: String,
-    name: String,
+pub(crate) struct AccountCopy {
+    pub id: String,
+    pub name: String,
     first: bool,
-    workspace: Option<ClickUpWorkspace>,
+    pub workspace: Option<ClickUpWorkspace>,
 }
 
 fn accounts_of(settings: &Mutex<SettingsStore>) -> Result<Vec<AccountCopy>, String> {
@@ -78,7 +78,7 @@ fn accounts_of(settings: &Mutex<SettingsStore>) -> Result<Vec<AccountCopy>, Stri
         .collect())
 }
 
-fn account_of(settings: &Mutex<SettingsStore>, account_id: &str) -> Result<AccountCopy, String> {
+pub(crate) fn account_of(settings: &Mutex<SettingsStore>, account_id: &str) -> Result<AccountCopy, String> {
     accounts_of(settings)?
         .into_iter()
         .find(|account| account.id == account_id)
@@ -99,7 +99,9 @@ pub(crate) struct Deps<'a> {
 }
 
 impl Deps<'_> {
-    fn token(&self, account: &AccountCopy) -> Result<(Option<ClickUpToken>, &'static str), String> {
+    /// `account`'s token (keychain, or the env override for the first
+    /// account) and where it comes from.
+    pub(crate) fn token(&self, account: &AccountCopy) -> Result<(Option<ClickUpToken>, &'static str), String> {
         let (token, source) = resolve(&account.id, account.first, self.env.clone(), self.secrets)?;
         Ok((token, source.as_str()))
     }
@@ -200,7 +202,7 @@ pub(crate) fn test_token(
 }
 
 /// Runs `work` on the blocking pool with the app's real keychain and HTTPS.
-async fn with_deps<T: Send + 'static>(
+pub(crate) async fn with_deps<T: Send + 'static>(
     app: AppHandle,
     work: impl FnOnce(&Deps) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
